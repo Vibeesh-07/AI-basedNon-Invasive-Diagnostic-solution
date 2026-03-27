@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { mockPatients, VALID_TN_CITIES } from '../data/mockPatients';
+import { VALID_TN_CITIES } from '../data/mockPatients';
+import { getAllPatients } from '../services/PatientDBService';
 import { getCoordinates, getWeatherData } from '../services/WeatherService';
 import { fetchLocalNews } from '../services/NewsService';
 import { generatePrediction } from '../services/PredictionEngine';
@@ -29,7 +30,8 @@ function EHR() {
       await Promise.all(promises);
 
       // 2. Evaluate each patient using the AgenticEHRService
-      const evaluatedPatients = mockPatients.map(patient => {
+      const fetchedPatients = await getAllPatients();
+      const evaluatedPatients = fetchedPatients.map(patient => {
         const prediction = cityPredictions[patient.city];
         const riskAnalysis = analyzePatientRisk(patient, prediction);
         return {

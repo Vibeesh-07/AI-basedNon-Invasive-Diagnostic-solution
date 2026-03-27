@@ -80,3 +80,58 @@ export const analyzePatientRisk = (patient, cityPrediction) => {
     level: 'Monitoring'
   };
 };
+
+/**
+ * Analyzes an image diagnosis result contextually against the patient's existing EHR parameters
+ * and the local environmental risk predictions.
+ */
+export const analyzeImageDiagnosisRisk = (patient, cityPrediction, imageDiagnosis) => {
+  if (!patient || !cityPrediction || !imageDiagnosis) return null;
+
+  const hasBrainCondition = patient.preExistingConditions.some(c => 
+    c.toLowerCase().includes('neurological') || 
+    c.toLowerCase().includes('seizure') || 
+    c.toLowerCase().includes('migraine')
+  );
+  
+  const olderAdult = patient.age >= 60;
+  
+  let agenticReasoning = '';
+  // Base risk level on the image diagnosis primarily
+  let agenticRiskLevel = imageDiagnosis.requires_attention ? 'Critical Warning' : 'Safe';
+  let hasWarning = imageDiagnosis.requires_attention;
+
+  const { primaryRisk } = cityPrediction;
+
+  if (imageDiagnosis.requires_attention) {
+    agenticReasoning += `AI identified a high-confidence ${imageDiagnosis.prediction} pattern. `;
+    
+    if (olderAdult) {
+      agenticReasoning += `Given the patient's advanced age (${patient.age}), they are at higher risk for rapid progression. `;
+    }
+    
+    if (hasBrainCondition) {
+      agenticReasoning += `History of neurological conditions strongly compounds this finding. `;
+    }
+    
+    if (primaryRisk && (primaryRisk.riskLevel === 'High' || primaryRisk.riskLevel === 'Critical')) {
+      agenticReasoning += `Furthermore, the current ${primaryRisk.riskLevel} ${primaryRisk.category} environmental hazard in ${patient.city} causes severe physiological stress, which may unexpectedly worsen symptoms. `;
+    }
+  } else {
+    agenticReasoning += `AI categorized scan as ${imageDiagnosis.prediction}. No acute imaging abnormalities detected. `;
+    
+    if (primaryRisk && (primaryRisk.riskLevel === 'High' || primaryRisk.riskLevel === 'Critical')) {
+      agenticReasoning += `However, due to a severe ${primaryRisk.category} hazard in ${patient.city}, the patient should still be monitored for generalized environmental stress affecting immunity.`;
+      hasWarning = true;
+      agenticRiskLevel = 'Elevated Alert';
+    } else {
+      agenticReasoning += `Overall profile is stable with no immediate compounding environmental threats in ${patient.city}.`;
+    }
+  }
+
+  return {
+    level: agenticRiskLevel,
+    reason: agenticReasoning.trim(),
+    hasWarning
+  };
+};

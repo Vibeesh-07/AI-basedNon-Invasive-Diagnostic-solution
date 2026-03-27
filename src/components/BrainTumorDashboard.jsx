@@ -1,5 +1,10 @@
-import React, { useState, useRef } from 'react';
-import { UploadCloud, CheckCircle, AlertTriangle, FileImage, X, Activity, Brain } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { UploadCloud, CheckCircle, AlertTriangle, FileImage, X, Activity, Brain, User, ShieldAlert } from 'lucide-react';
+import { getCoordinates, getWeatherData } from '../services/WeatherService';
+import { fetchLocalNews } from '../services/NewsService';
+import { generatePrediction } from '../services/PredictionEngine';
+import { analyzeImageDiagnosisRisk } from '../services/AgenticEHRService';
+import { getAllPatients, updatePatientRecord } from '../services/PatientDBService';
 
 const API_URL = 'http://localhost:5000';
 
@@ -9,8 +14,41 @@ const BrainTumorDashboard = () => {
   const [selectedFile, setSelectedFile] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [result, setResult] = useState(null);
+  const [agenticResult, setAgenticResult] = useState(null);
   const [error, setError] = useState(null);
+
+  const [patients, setPatients] = useState([]);
+  const [selectedPatientId, setSelectedPatientId] = useState('');
+  const [cityPredictions, setCityPredictions] = useState({});
+
   const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    const fetchPatients = async () => {
+      const data = await getAllPatients();
+      setPatients(data);
+    };
+    fetchPatients();
+  }, []);
+
+  const selectedPatient = patients.find(p => p.id === selectedPatientId);
+
+  const fetchPredictionForCity = async (city) => {
+    if (cityPredictions[city]) return cityPredictions[city];
+    try {
+      const coords = await getCoordinates(city);
+      const [weather, news] = await Promise.all([
+        getWeatherData(coords.lat, coords.lon),
+        fetchLocalNews(coords.name)
+      ]);
+      const prediction = generatePrediction(weather, news);
+      setCityPredictions(prev => ({ ...prev, [city]: prediction }));
+      return prediction;
+    } catch (err) {
+      console.error("Error fetching environmental context", err);
+      return null;
+    }
+  };
 
   const handleDrag = (e) => {
     e.preventDefault();
@@ -38,6 +76,7 @@ const BrainTumorDashboard = () => {
     }
     setError(null);
     setResult(null);
+    setAgenticResult(null);
     setSelectedFile(file);
     const reader = new FileReader();
     reader.onload = (e) => setSelectedImage(e.target.result);
@@ -48,17 +87,25 @@ const BrainTumorDashboard = () => {
     setSelectedImage(null);
     setSelectedFile(null);
     setResult(null);
+    setAgenticResult(null);
     setError(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const analyzeScan = async () => {
     if (!selectedFile) return;
+    if (!selectedPatientId) {
+      setError("Please select a patient to contextually evaluate the diagnosis.");
+      return;
+    }
+
     setIsAnalyzing(true);
     setResult(null);
+    setAgenticResult(null);
     setError(null);
 
     try {
+      // 1. Fetch AI model prediction
       const formData = new FormData();
       formData.append('file', selectedFile);
 
@@ -74,6 +121,25 @@ const BrainTumorDashboard = () => {
 
       const data = await response.json();
       setResult(data);
+
+      // 2. Fetch Environmental Prediction and perform Agentic Analysis
+      const cityPrediction = await fetchPredictionForCity(selectedPatient.city);
+      const riskAnalysis = analyzeImageDiagnosisRisk(selectedPatient, cityPrediction, data);
+      
+      setAgenticResult(riskAnalysis);
+
+      // 3. Save diagnosis to Firebase so it shares state with DoctorDashboard / EHR
+      await updatePatientRecord(selectedPatientId, {
+        latestDiagnosis: {
+          prediction: data.prediction,
+          confidence: data.confidence,
+          requiresAttention: data.requires_attention,
+          agenticRiskLevel: riskAnalysis.level,
+          agenticReason: riskAnalysis.reason,
+          timestamp: new Date().toISOString()
+        }
+      });
+
     } catch (err) {
       setError(err.message || 'Failed to connect to the diagnosis server. Make sure the Python backend is running on port 5000.');
     } finally {
@@ -86,13 +152,60 @@ const BrainTumorDashboard = () => {
       <header style={{ marginBottom: '2rem' }}>
         <h2 style={{ fontSize: '1.8rem', fontWeight: 'bold', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <Activity color="var(--accent-purple)" size={28} />
-          Brain Tumor Diagnosis
+          Contextual Image Diagnosis
         </h2>
         <p style={{ color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
-          Upload MRI scans for AI-powered detection using the VGG16-based classification model.
-          Results include Grad-CAM heatmap visualization of AI focus areas.
+          Upload MRI scans for AI-powered detection. Findings are autonomously correlated with patient health records 
+          and live environmental stressors (AQI, weather) and shared directly to the unified EHR via Firebase.
         </p>
       </header>
+
+      {/* Patient Selection */}
+      <div className="glass-panel" style={{ padding: '1.5rem', marginBottom: '2rem' }}>
+        <h3 style={{ fontSize: '1.1rem', marginBottom: '1rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <User size={20} color="var(--accent-blue)" /> Patient Assignment
+        </h3>
+        <select 
+          value={selectedPatientId} 
+          onChange={(e) => {
+            setSelectedPatientId(e.target.value);
+            setResult(null);
+            setAgenticResult(null);
+            setError(null);
+          }}
+          style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', background: 'rgba(0,0,0,0.2)', color: 'var(--text-primary)', border: '1px solid var(--surface-border)', outline: 'none', cursor: 'pointer' }}
+        >
+          <option value="">-- Select a Patient Profile --</option>
+          {patients.map(p => (
+            <option key={p.id} value={p.id}>{p.name} (ID: {p.id}) - {p.city}</option>
+          ))}
+        </select>
+
+        {selectedPatient && (
+          <div style={{ marginTop: '1rem', padding: '1rem', background: 'rgba(255,255,255,0.03)', borderRadius: '8px', display: 'flex', gap: '2rem' }}>
+            <div>
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Demographics</p>
+              <p style={{ fontWeight: '500' }}>{selectedPatient.age} yrs, {selectedPatient.gender}</p>
+            </div>
+            <div>
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Pre-existing Conditions</p>
+              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.25rem' }}>
+                {selectedPatient.preExistingConditions.map((c, i) => (
+                  <span key={i} style={{ fontSize: '0.75rem', background: 'rgba(255,255,255,0.1)', padding: '2px 8px', borderRadius: '4px' }}>{c}</span>
+                ))}
+              </div>
+            </div>
+            {selectedPatient.latestDiagnosis && (
+              <div>
+                 <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Most Recent Diagnosis</p>
+                 <p style={{ fontWeight: '500', color: selectedPatient.latestDiagnosis.requiresAttention ? 'var(--risk-critical)' : 'var(--risk-low)' }}>
+                   {selectedPatient.latestDiagnosis.prediction}
+                 </p>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(350px, 1fr))', gap: '2rem' }}>
 
@@ -128,7 +241,11 @@ const BrainTumorDashboard = () => {
           ) : (
             <div style={{ position: 'relative', borderRadius: '12px', overflow: 'hidden', flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#000', minHeight: '200px' }}>
               <img src={selectedImage} alt="Selected MRI Scan" style={{ maxWidth: '100%', maxHeight: '300px', objectFit: 'contain' }} />
-              <button onClick={removeImage} style={{ position: 'absolute', top: '10px', right: '10px', background: 'rgba(0,0,0,0.6)', border: 'none', borderRadius: '50%', padding: '6px', cursor: 'pointer', color: '#fff', display: 'flex' }}>
+              <button 
+                onClick={removeImage} 
+                style={{ position: 'absolute', top: '10px', right: '10px', background: 'rgba(0,0,0,0.6)', border: 'none', borderRadius: '50%', padding: '6px', cursor: 'pointer', color: '#fff', display: 'flex' }}
+                disabled={isAnalyzing}
+              >
                 <X size={18} />
               </button>
             </div>
@@ -142,32 +259,28 @@ const BrainTumorDashboard = () => {
 
           <button
             onClick={analyzeScan}
-            disabled={!selectedFile || isAnalyzing}
+            disabled={!selectedFile || isAnalyzing || !selectedPatientId}
             style={{
               marginTop: '1.5rem', width: '100%', padding: '1rem',
-              background: !selectedFile || isAnalyzing ? 'rgba(255,255,255,0.1)' : 'var(--accent-purple)',
-              color: !selectedFile || isAnalyzing ? 'var(--text-secondary)' : '#fff',
+              background: !selectedFile || isAnalyzing || !selectedPatientId ? 'rgba(255,255,255,0.1)' : 'var(--accent-purple)',
+              color: !selectedFile || isAnalyzing || !selectedPatientId ? 'var(--text-secondary)' : '#fff',
               border: 'none', borderRadius: '8px', fontWeight: '600',
-              cursor: !selectedFile || isAnalyzing ? 'not-allowed' : 'pointer',
+              cursor: !selectedFile || isAnalyzing || !selectedPatientId ? 'not-allowed' : 'pointer',
               transition: 'background 0.3s ease', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem'
             }}
           >
             {isAnalyzing ? (
               <>
                 <div style={{ width: '16px', height: '16px', border: '2px solid rgba(255,255,255,0.3)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
-                Running Diagnosis Model...
+                Running Contextual Diagnosis...
               </>
             ) : (
               <>
                 <FileImage size={18} />
-                Run Diagnosis Model
+                Run Contextual Diagnosis
               </>
             )}
           </button>
-
-          <div style={{ marginTop: '1rem', padding: '0.75rem', background: 'rgba(255,255,255,0.03)', borderRadius: '8px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-            ⚠ Disclaimer: For educational purposes only. Does not substitute professional medical advice.
-          </div>
         </div>
 
         {/* Results Section */}
@@ -181,14 +294,14 @@ const BrainTumorDashboard = () => {
               {!result && !isAnalyzing && (
                 <div style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>
                   <Activity size={48} style={{ opacity: 0.2, margin: '0 auto 1rem' }} />
-                  <p>Upload an MRI scan and run the diagnosis model.</p>
+                  <p>Assign a patient and upload an MRI scan to begin.</p>
                 </div>
               )}
 
               {isAnalyzing && (
                 <div style={{ textAlign: 'center', color: 'var(--accent-purple)' }}>
                   <Activity size={48} style={{ opacity: 0.8, margin: '0 auto 1rem', animation: 'pulse 1.5s infinite' }} />
-                  <p>Running VGG16 model prediction...</p>
+                  <p>Interfacing with Neural Network and Agentic Engine...</p>
                   <div style={{ width: '100%', height: '4px', background: 'rgba(255,255,255,0.1)', borderRadius: '2px', marginTop: '1rem', overflow: 'hidden' }}>
                     <div style={{ height: '100%', background: 'var(--accent-purple)', width: '60%', animation: 'slide 1.5s linear infinite' }} />
                   </div>
@@ -204,7 +317,7 @@ const BrainTumorDashboard = () => {
                       : <CheckCircle size={32} color="var(--risk-low)" />
                     }
                     <div>
-                      <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '0.25rem' }}>Prediction</p>
+                      <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '0.25rem' }}>Imaging Classification</p>
                       <h4 style={{ fontSize: '1.5rem', fontWeight: 'bold', color: result.requires_attention ? 'var(--risk-critical)' : 'var(--risk-low)', margin: 0 }}>
                         {result.prediction}
                       </h4>
@@ -212,9 +325,9 @@ const BrainTumorDashboard = () => {
                   </div>
 
                   {/* Confidence */}
-                  <div style={{ background: 'rgba(0,0,0,0.2)', padding: '1.25rem', borderRadius: '12px', marginBottom: '1rem' }}>
+                  <div style={{ background: 'rgba(0,0,0,0.2)', padding: '1.25rem', borderRadius: '12px', marginBottom: '1.5rem' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-                      <span style={{ color: 'var(--text-secondary)' }}>Confidence</span>
+                      <span style={{ color: 'var(--text-secondary)' }}>Model Confidence</span>
                       <span style={{ color: 'var(--text-primary)', fontWeight: 'bold' }}>{result.confidence}%</span>
                     </div>
                     <div style={{ width: '100%', height: '8px', background: 'rgba(255,255,255,0.1)', borderRadius: '4px', overflow: 'hidden' }}>
@@ -222,9 +335,30 @@ const BrainTumorDashboard = () => {
                     </div>
                   </div>
 
-                  {/* All class probabilities */}
+                  {/* Agentic Integration Output */}
+                  {agenticResult && (
+                    <div style={{ 
+                      padding: '1.5rem', 
+                      borderRadius: '12px', 
+                      border: `1px solid ${agenticResult.hasWarning ? 'rgba(239,68,68,0.3)' : 'rgba(255,255,255,0.1)'}`, 
+                      background: agenticResult.hasWarning ? 'rgba(239,68,68,0.05)' : 'rgba(168,85,247,0.05)' 
+                    }}>
+                      <h4 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: agenticResult.hasWarning ? 'var(--risk-critical)' : 'var(--accent-purple)', marginBottom: '0.75rem', fontSize: '1rem' }}>
+                        <ShieldAlert size={20} />
+                        Agentic Assessment Context
+                      </h4>
+                      <p style={{ fontSize: '0.95rem', lineHeight: '1.5', color: 'var(--text-primary)' }}>
+                        {agenticResult.reason}
+                      </p>
+                      <div style={{ marginTop: '0.75rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                        Current Level: <strong style={{ color: agenticResult.hasWarning ? 'var(--risk-critical)' : 'var(--accent-purple)' }}>{agenticResult.level}</strong>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* All class probabilities (Toggle or list) */}
                   {result.all_probabilities && (
-                    <div style={{ background: 'rgba(0,0,0,0.15)', padding: '1rem', borderRadius: '8px' }}>
+                    <div style={{ background: 'rgba(0,0,0,0.15)', padding: '1rem', borderRadius: '8px', marginTop: '1.5rem' }}>
                       <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginBottom: '0.75rem' }}>All Class Probabilities</p>
                       {Object.entries(result.all_probabilities).map(([label, prob]) => (
                         <div key={label} style={{ marginBottom: '0.5rem' }}>
@@ -239,16 +373,6 @@ const BrainTumorDashboard = () => {
                       ))}
                     </div>
                   )}
-
-                  {/* Next steps */}
-                  <div style={{ marginTop: '1.25rem', padding: '1rem', borderLeft: '3px solid var(--accent-purple)', background: 'rgba(168,85,247,0.05)' }}>
-                    <h5 style={{ color: 'var(--text-primary)', marginBottom: '0.5rem', fontSize: '0.9rem' }}>Next Steps</h5>
-                    <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', lineHeight: '1.5' }}>
-                      {result.requires_attention
-                        ? 'The model detected a potential tumor. Immediate review by a radiologist or neurologist is strongly advised.'
-                        : 'The model detected no abnormalities. Routine follow-up is recommended as per standard protocols.'}
-                    </p>
-                  </div>
                 </div>
               )}
             </div>

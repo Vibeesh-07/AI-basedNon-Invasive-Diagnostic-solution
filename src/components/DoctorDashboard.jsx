@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { mockPatients, VALID_TN_CITIES } from '../data/mockPatients';
+import { VALID_TN_CITIES } from '../data/mockPatients';
+import { getAllPatients, seedMockPatients } from '../services/PatientDBService';
 import { getCoordinates, getWeatherData } from '../services/WeatherService';
 import { fetchLocalNews } from '../services/NewsService';
 import { generatePrediction } from '../services/PredictionEngine';
@@ -30,7 +31,8 @@ function DoctorDashboard() {
         cityPredictions[city] = result;
       }));
 
-      const evaluated = mockPatients.map(p => ({
+      const fetchedPatients = await getAllPatients();
+      const evaluated = fetchedPatients.map(p => ({
         ...p,
         riskAnalysis: analyzePatientRisk(p, cityPredictions[p.city]),
         prediction: cityPredictions[p.city]
@@ -202,7 +204,19 @@ function DoctorDashboard() {
       <header style={{ marginBottom: '2.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <h2 style={{ fontSize: '1.5rem' }}>Doctor Workstation</h2>
-          <p>Tamil Nadu Health Region Patient Roster</p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginTop: '0.5rem' }}>
+            <p style={{ margin: 0 }}>Tamil Nadu Health Region Patient Roster</p>
+            <button 
+              onClick={async () => {
+                await seedMockPatients();
+                alert("Database seeded! Reloading patients...");
+                loadAllData();
+              }} 
+              style={{ background: 'var(--accent-purple)', color: 'white', padding: '0.35rem 0.75rem', borderRadius: '6px', border: 'none', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 600 }}
+            >
+              Seed DB
+            </button>
+          </div>
         </div>
         <div style={{ position: 'relative', width: '300px' }}>
           <Search style={{ position: 'absolute', left: '12px', top: '12px', color: 'var(--text-secondary)' }} size={18} />
