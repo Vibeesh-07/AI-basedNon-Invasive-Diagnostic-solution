@@ -14,6 +14,10 @@ Models:
      Input: (None, 224, 224, 3) | 4 Classes | Dense(128) head
      Endpoint: POST /predict/alzheimer
 
+  4. Tuberculosis Detection — Local: Models/tb_classifier_v2.h5 (Custom CNN)
+     Input: (None, 500, 500, 1) grayscale | Binary sigmoid output
+     Endpoint: POST /predict/tb
+
 Shared Endpoints:
   GET /health  — status of all loaded models
 """
@@ -37,11 +41,13 @@ CORS(app)
 BASE_DIR        = os.path.dirname(os.path.abspath(__file__))
 SKIN_MODEL_PATH = os.path.join(BASE_DIR, "..", "Models", "cnn_fc_model.h5")
 ALZHEIMER_MODEL_PATH = os.path.join(BASE_DIR, "..", "Models", "alzheimers_mobilenet_v2.h5")
+TB_MODEL_PATH   = os.path.join(BASE_DIR, "..", "Models", "tb_classifier_v2.h5")
 
 # ─── Model registry ───────────────────────────────────────────────────────────
 brain_model     = None
 skin_model      = None
 alzheimer_model = None
+tb_model        = None
 
 BRAIN_LABELS = ["Glioma Tumor", "Meningioma Tumor", "No Tumor", "Pituitary Tumor"]
 
@@ -66,6 +72,12 @@ ALZHEIMER_LABELS = [
     "Moderate Demented",
     "Non Demented",
     "Very Mild Demented"
+]
+
+# TB 2-class labels
+TB_LABELS = [
+    "Normal",
+    "Tuberculosis"
 ]
 
 # ─── Loaders ──────────────────────────────────────────────────────────────────
@@ -136,6 +148,38 @@ def load_alzheimer_model():
     alzheimer_model = m
     logger.info(f"Alzheimer model loaded. Input: {m.input_shape}, Output: {m.output_shape}")
     return alzheimer_model
+
+
+def load_tb_model():
+    """Load Sequential CNN from saved model config+weights for 500x500 grayscale TB classification."""
+    global tb_model
+    if tb_model is not None:
+        return tb_model
+    import tensorflow as tf, json
+    # Use TB_MODEL_PATH which now points to v2
+    abs_path = os.path.abspath(TB_MODEL_PATH)
+    logger.info(f"Loading TB model (v2) from: {abs_path}")
+    m = tf.keras.Sequential([
+        tf.keras.layers.InputLayer(input_shape=(500, 500, 1)),
+        tf.keras.layers.Conv2D(32, (3,3), activation='relu', name='conv2d'),
+        tf.keras.layers.MaxPooling2D(name='max_pooling2d'),
+        tf.keras.layers.Conv2D(32, (3,3), activation='relu', name='conv2d_1'),
+        tf.keras.layers.MaxPooling2D(name='max_pooling2d_1'),
+        tf.keras.layers.Conv2D(32, (3,3), activation='relu', name='conv2d_2'),
+        tf.keras.layers.MaxPooling2D(name='max_pooling2d_2'),
+        tf.keras.layers.Conv2D(64, (3,3), activation='relu', name='conv2d_3'),
+        tf.keras.layers.MaxPooling2D(name='max_pooling2d_3'),
+        tf.keras.layers.Conv2D(64, (3,3), activation='relu', name='conv2d_4'),
+        tf.keras.layers.MaxPooling2D(name='max_pooling2d_4'),
+        tf.keras.layers.Flatten(name='flatten'),
+        tf.keras.layers.Dense(128, activation='relu', name='dense'),
+        tf.keras.layers.Dense(64, activation='relu', name='dense_1'),
+        tf.keras.layers.Dense(1, activation='sigmoid', name='dense_2'),
+    ])
+    m.load_weights(abs_path, by_name=True)
+    tb_model = m
+    logger.info(f"TB model loaded. Input: {m.input_shape}, Output: {m.output_shape}")
+    return tb_model
 
 
 # ─── Grad-CAM Helpers ─────────────────────────────────────────────────────────
@@ -250,6 +294,29 @@ def run_alzheimer_inference(image_bytes: bytes):
     }
 
 
+def run_tb_inference(image_bytes: bytes):
+    """Preprocess to 500x500 grayscale, run CNN, return binary sigmoid TB classification."""
+    img = Image.open(io.BytesIO(image_bytes)).convert("L").resize((500, 500), Image.LANCZOS)
+    arr = np.array(img, dtype=np.float32) / 255.0
+    input_tensor = np.expand_dims(arr, axis=(0, -1))  # shape (1, 500, 500, 1)
+    m = load_tb_model()
+    score = float(m.predict(input_tensor, verbose=0)[0][0])
+    label  = "Tuberculosis" if score > 0.5 else "Normal"
+    conf   = score * 100 if score > 0.5 else (1 - score) * 100
+    heatmap = generate_gradcam(m, input_tensor, 0)
+    return {
+        "prediction":        label,
+        "confidence":        round(conf, 2),
+        "raw_score":         round(score * 100, 2),
+        "all_probabilities": {
+            "Normal":        round((1 - score) * 100, 2),
+            "Tuberculosis":  round(score * 100, 2)
+        },
+        "requires_attention": score > 0.5,
+        "heatmap":           heatmap
+    }
+
+
 # ─── Routes ───────────────────────────────────────────────────────────────────
 
 @app.route("/health", methods=["GET"])
@@ -259,6 +326,7 @@ def health():
         "brain_model_loaded":  brain_model is not None,
         "skin_model_loaded":   skin_model is not None,
         "alzheimer_model_loaded": alzheimer_model is not None,
+        "tb_model_loaded":     tb_model is not None,
     })
 
 
@@ -310,6 +378,17 @@ def predict_alzheimer():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/predict/tb", methods=["POST"])
+def predict_tb():
+    if "file" not in request.files or request.files["file"].filename == "":
+        return jsonify({"error": "No file provided."}), 400
+    try:
+        return jsonify(run_tb_inference(request.files["file"].read()))
+    except Exception as e:
+        logger.exception("TB prediction error")
+        return jsonify({"error": str(e)}), 500
+
+
 # Backward-compat alias
 @app.route("/predict", methods=["POST"])
 def predict_legacy():
@@ -323,6 +402,7 @@ if __name__ == "__main__":
         load_brain_model()
         load_skin_model()
         load_alzheimer_model()
+        load_tb_model()
     except Exception as e:
         logger.warning(f"Pre-load warning: {e}")
     app.run(host="0.0.0.0", port=5000, debug=False)

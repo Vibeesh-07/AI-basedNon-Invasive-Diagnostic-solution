@@ -1,4 +1,4 @@
-import { Shield, Stethoscope, Settings, Menu, X, Activity, Microscope, Scan, BrainCircuit, Zap } from 'lucide-react';
+import { Shield, Stethoscope, Settings, Menu, X, Activity, Microscope, Scan, BrainCircuit, Zap, Layers } from 'lucide-react';
 
 function Sidebar({ activeRole, setActiveRole, isOpen, setIsOpen }) {
   const roles = [
@@ -8,6 +8,7 @@ function Sidebar({ activeRole, setActiveRole, isOpen, setIsOpen }) {
     { id: 'braintumor', label: 'Brain Tumor Diagnosis', icon: Activity, color: 'var(--accent-purple)' },
     { id: 'skincancer', label: 'Skin Cancer — CNN', icon: Scan, color: 'var(--accent-blue)' },
     { id: 'alzheimer', label: 'Alzheimer\'s — EffNetV2', icon: Zap, color: '#f97316' },
+    { id: 'tb', label: 'Tuberculosis — CNN', icon: Layers, color: '#dc2626' },
   ];
 
   return (
