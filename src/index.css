@@ -139,6 +139,10 @@ input:focus {
   margin-top: 2rem;
 }
 
+.patient-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
 @media(min-width: 768px) {
   .grid-layout {
     grid-template-columns: repeat(2, 1fr);

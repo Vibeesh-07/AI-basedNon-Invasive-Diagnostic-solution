@@ -1,59 +1,42 @@
 import { useState } from 'react';
+import Sidebar from './components/Sidebar';
 import Radar from './components/Radar';
-import EHR from './components/EHR';
-import { ShieldCheck, ActivitySquare } from 'lucide-react';
+import AdminDashboard from './components/AdminDashboard';
+import DoctorDashboard from './components/DoctorDashboard';
 
 function App() {
-  const [activeTab, setActiveTab] = useState('radar');
+  const [activeRole, setActiveRole] = useState('public');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+
+  const renderView = () => {
+    switch(activeRole) {
+      case 'admin':
+        return <AdminDashboard />;
+      case 'doctor':
+        return <DoctorDashboard />;
+      default:
+        return <Radar />;
+    }
+  };
 
   return (
-    <div className="app-container">
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem', borderBottom: '1px solid var(--surface-border)', paddingBottom: '1rem' }}>
-        <h1 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '1.5rem', color: 'var(--accent-teal)', margin: 0 }}>
-          <ShieldCheck size={28} />
-          OutbreakPredict
-        </h1>
-        
-        <div style={{ display: 'flex', gap: '1rem' }}>
-          <button 
-            className="btn-primary"
-            style={{ 
-              background: activeTab === 'radar' ? 'linear-gradient(135deg, var(--accent-blue), var(--accent-purple))' : 'transparent',
-              color: activeTab === 'radar' ? 'white' : 'var(--text-secondary)',
-              boxShadow: activeTab === 'radar' ? '0 4px 14px rgba(59, 130, 246, 0.4)' : 'none',
-              border: activeTab === 'radar' ? 'none' : '1px solid var(--surface-border)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem'
-            }}
-            onClick={() => setActiveTab('radar')}
-          >
-            <ShieldCheck size={18} />
-            Global Radar
-          </button>
-          
-          <button 
-            className="btn-primary"
-            style={{ 
-              background: activeTab === 'ehr' ? 'linear-gradient(135deg, var(--accent-purple), #ec4899)' : 'transparent',
-              color: activeTab === 'ehr' ? 'white' : 'var(--text-secondary)',
-              boxShadow: activeTab === 'ehr' ? '0 4px 14px rgba(139, 92, 246, 0.4)' : 'none',
-              border: activeTab === 'ehr' ? 'none' : '1px solid var(--surface-border)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem'
-            }}
-            onClick={() => setActiveTab('ehr')}
-          >
-            <ActivitySquare size={18} />
-            Agentic EHR
-          </button>
-        </div>
-      </header>
-
-      {/* Main Content Area */}
-      <main>
-        {activeTab === 'radar' ? <Radar /> : <EHR />}
+    <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-color)' }}>
+      <Sidebar 
+        activeRole={activeRole} 
+        setActiveRole={setActiveRole} 
+        isOpen={isSidebarOpen}
+        setIsOpen={setIsSidebarOpen}
+      />
+      
+      <main style={{ 
+        flex: 1, 
+        marginLeft: isSidebarOpen ? '260px' : '0',
+        padding: '2rem 3rem',
+        transition: 'margin-left 0.3s ease',
+        maxWidth: '100vw',
+        overflowX: 'hidden'
+      }}>
+        {renderView()}
       </main>
     </div>
   );
