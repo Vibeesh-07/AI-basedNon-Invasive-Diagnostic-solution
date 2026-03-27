@@ -1,56 +1,78 @@
-import { useState } from 'react';
-import Sidebar from './components/Sidebar';
-import Radar from './components/Radar';
-import AdminDashboard from './components/AdminDashboard';
-import DoctorDashboard from './components/DoctorDashboard';
-import BrainTumorDashboard from './components/BrainTumorDashboard';
-import SkinCancerDashboard from './components/SkinCancerDashboard';
-import AlzheimerDashboard from './components/AlzheimerDashboard';
-import TBDashboard from './components/TBDashboard';
+import { useState, useEffect } from 'react';
+import PatientListView from './components/PatientListView';
+import PatientProfileView from './components/PatientProfileView';
+import DiagnosticPage from './components/DiagnosticPage';
+import { getAllPatients } from './services/PatientDBService';
 
+/**
+ * Top-level router — 3 views:
+ *   list      → PatientListView (home)
+ *   profile   → PatientProfileView (patient detail)
+ *   diagnostic → DiagnosticPage (scan upload + result)
+ */
 function App() {
-  const [activeRole, setActiveRole] = useState('public');
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [view, setView] = useState('list');
+  const [activePatientId, setActivePatientId] = useState(null);
 
-  const renderView = () => {
-    switch(activeRole) {
-      case 'admin':
-        return <AdminDashboard />;
-      case 'doctor':
-        return <DoctorDashboard />;
-      case 'braintumor':
-        return <BrainTumorDashboard />;
-      case 'skincancer':
-        return <SkinCancerDashboard />;
-      case 'alzheimer':
-        return <AlzheimerDashboard />;
-      case 'tb':
-        return <TBDashboard />;
-      default:
-        return <Radar />;
-    }
+  // Source-of-truth patient list (with in-session diagnosisHistory)
+  const [patients, setPatients] = useState([]);
+  const [patientsLoading, setPatientsLoading] = useState(true);
+
+  useEffect(() => {
+    getAllPatients()
+      .then(data => setPatients(data))
+      .finally(() => setPatientsLoading(false));
+  }, []);
+
+  // Navigation helpers
+  const navigate = (nextView, patientId = null) => {
+    setView(nextView);
+    if (patientId) setActivePatientId(patientId);
+    window.scrollTo(0, 0);
   };
 
-  return (
-    <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-color)' }}>
-      <Sidebar 
-        activeRole={activeRole} 
-        setActiveRole={setActiveRole} 
-        isOpen={isSidebarOpen}
-        setIsOpen={setIsSidebarOpen}
+  // Called by DiagnosticPage after a successful scan — updates in-session history
+  const recordDiagnosis = (patientId, entry) => {
+    setPatients(prev =>
+      prev.map(p => {
+        if (p.id !== patientId) return p;
+        return {
+          ...p,
+          diagnosisHistory: [...(p.diagnosisHistory ?? []), entry],
+        };
+      })
+    );
+  };
+
+  const activePatient = patients.find(p => p.id === activePatientId) || null;
+
+  if (view === 'profile' && activePatient) {
+    return (
+      <PatientProfileView
+        patient={activePatient}
+        navigate={navigate}
       />
-      
-      <main style={{ 
-        flex: 1, 
-        marginLeft: isSidebarOpen ? '260px' : '0',
-        padding: '2rem 3rem',
-        transition: 'margin-left 0.3s ease',
-        maxWidth: '100vw',
-        overflowX: 'hidden'
-      }}>
-        {renderView()}
-      </main>
-    </div>
+    );
+  }
+
+  if (view === 'diagnostic' && activePatient) {
+    return (
+      <DiagnosticPage
+        patient={activePatient}
+        patients={patients}
+        navigate={navigate}
+        recordDiagnosis={recordDiagnosis}
+      />
+    );
+  }
+
+  // Default: list view
+  return (
+    <PatientListView
+      patients={patients}
+      loading={patientsLoading}
+      navigate={navigate}
+    />
   );
 }
 

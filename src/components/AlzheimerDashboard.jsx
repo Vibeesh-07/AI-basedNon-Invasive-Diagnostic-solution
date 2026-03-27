@@ -1,35 +1,56 @@
-import React, { useState, useRef } from 'react';
-import { UploadCloud, CheckCircle, AlertTriangle, FileImage, X, Zap } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { UploadCloud, CheckCircle, AlertTriangle, FileImage, X, Zap, ShieldAlert, TrendingUp } from 'lucide-react';
+import PatientPanel from './PatientPanel';
+import { getEnvironmentalData } from '../services/WeatherService';
+import { fetchLocalNews } from '../services/NewsService';
+import { generatePrediction } from '../services/PredictionEngine';
+import { analyzeImageDiagnosisRisk } from '../services/AgenticEHRService';
 
 const API_URL = 'http://localhost:5000';
 
-const HIGH_RISK = new Set([
-  'Mild Demented', 'Moderate Demented', 'Very Mild Demented'
-]);
+const HIGH_RISK = new Set(['Mild Demented', 'Moderate Demented', 'Very Mild Demented']);
 
-// Severity ordering for badge colors
 const SEVERITY = {
-  'Non Demented':        { bg: 'rgba(16,185,129,0.1)',  border: 'rgba(16,185,129,0.2)',  text: 'var(--risk-low)',      badge: '#10b981' },
-  'Very Mild Demented':  { bg: 'rgba(234,179,8,0.1)',   border: 'rgba(234,179,8,0.2)',   text: '#eab308',              badge: '#eab308' },
-  'Mild Demented':       { bg: 'rgba(249,115,22,0.1)',  border: 'rgba(249,115,22,0.2)',  text: '#f97316',              badge: '#f97316' },
-  'Moderate Demented':   { bg: 'rgba(239,68,68,0.1)',   border: 'rgba(239,68,68,0.2)',   text: 'var(--risk-critical)', badge: '#ef4444' },
+  'Non Demented':       { bg: 'rgba(16,185,129,0.1)',  border: 'rgba(16,185,129,0.2)',  text: 'var(--risk-low)',      badge: '#10b981' },
+  'Very Mild Demented': { bg: 'rgba(234,179,8,0.1)',   border: 'rgba(234,179,8,0.2)',   text: '#eab308',              badge: '#eab308' },
+  'Mild Demented':      { bg: 'rgba(249,115,22,0.1)',  border: 'rgba(249,115,22,0.2)',  text: '#f97316',              badge: '#f97316' },
+  'Moderate Demented':  { bg: 'rgba(239,68,68,0.1)',   border: 'rgba(239,68,68,0.2)',   text: 'var(--risk-critical)', badge: '#ef4444' },
 };
 
 const CLINICAL_NOTE = {
-  'Non Demented':        'No significant cognitive impairment detected. Continue routine monitoring.',
-  'Very Mild Demented':  'Very mild cognitive changes detected. Recommend neurological follow-up within 6 months.',
-  'Mild Demented':       'Mild dementia-related patterns found. Refer for neurological evaluation and cognitive assessment.',
-  'Moderate Demented':   'Moderate Alzheimer\'s disease indicators detected. Urgent specialist referral strongly advised.',
+  'Non Demented':       'No significant cognitive impairment detected. Continue routine monitoring.',
+  'Very Mild Demented': 'Very mild cognitive changes detected. Recommend neurological follow-up within 6 months.',
+  'Mild Demented':      'Mild dementia-related patterns found. Refer for neurological evaluation and cognitive assessment.',
+  'Moderate Demented':  "Moderate Alzheimer's disease indicators detected. Urgent specialist referral strongly advised.",
 };
 
-const AlzheimerDashboard = () => {
+const ACCENT = '#f97316';
+
+const AlzheimerDashboard = ({ patients = [], recordDiagnosis }) => {
   const [dragActive, setDragActive] = useState(false);
   const [selectedImage, setSelectedImage] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [result, setResult] = useState(null);
+  const [agenticResult, setAgenticResult] = useState(null);
   const [error, setError] = useState(null);
   const fileInputRef = useRef(null);
+
+  const [selectedPatientId, setSelectedPatientId] = useState('');
+  const [envData, setEnvData] = useState(null);
+  const [envLoading, setEnvLoading] = useState(false);
+
+  const selectedPatient = patients.find(p => p.id === selectedPatientId);
+
+  // Fetch environmental data when patient changes
+  useEffect(() => {
+    if (!selectedPatient) { setEnvData(null); return; }
+    setEnvLoading(true);
+    getEnvironmentalData(selectedPatient.city)
+      .then(data => setEnvData(data))
+      .catch(() => setEnvData(null))
+      .finally(() => setEnvLoading(false));
+  }, [selectedPatientId]);
 
   const handleDrag = (e) => {
     e.preventDefault(); e.stopPropagation();
@@ -47,20 +68,23 @@ const AlzheimerDashboard = () => {
 
   const handleFile = (file) => {
     if (!file.type.startsWith('image/')) { setError('Please upload a valid image file.'); return; }
-    setError(null); setResult(null); setSelectedFile(file);
+    setError(null); setResult(null); setAgenticResult(null); setSelectedFile(file);
     const reader = new FileReader();
     reader.onload = (e) => setSelectedImage(e.target.result);
     reader.readAsDataURL(file);
   };
 
   const removeImage = () => {
-    setSelectedImage(null); setSelectedFile(null); setResult(null); setError(null);
+    setSelectedImage(null); setSelectedFile(null); setResult(null); setAgenticResult(null); setError(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const analyzeScan = async () => {
     if (!selectedFile) return;
-    setIsAnalyzing(true); setResult(null); setError(null);
+    if (!selectedPatientId) { setError('Please select a patient before running analysis.'); return; }
+
+    setIsAnalyzing(true); setResult(null); setAgenticResult(null); setError(null);
+
     try {
       const formData = new FormData();
       formData.append('file', selectedFile);
@@ -69,7 +93,33 @@ const AlzheimerDashboard = () => {
         const errData = await response.json().catch(() => ({}));
         throw new Error(errData.error || `Server error: ${response.status}`);
       }
-      setResult(await response.json());
+      const data = await response.json();
+      setResult(data);
+
+      // Grab current patient from state (may have fresh history from prior scans this session)
+      const currentPatient = patients.find(p => p.id === selectedPatientId);
+
+      // Build env context for agentic analysis
+      let weatherPrediction = null;
+      if (envData) {
+        const news = await fetchLocalNews(selectedPatient.city).catch(() => ({ articles: [] }));
+        weatherPrediction = generatePrediction(envData.weather, news);
+      }
+
+      const agEnvData = {
+        aqi: envData?.aqi ?? null,
+        weather: envData?.weather ?? null,
+        cityPrediction: weatherPrediction,
+      };
+
+      const enriched = analyzeImageDiagnosisRisk(currentPatient, agEnvData, data, 'alzheimer');
+      setAgenticResult(enriched);
+
+      // Record to lifted state for history tracking
+      if (recordDiagnosis) {
+        recordDiagnosis(selectedPatientId, 'alzheimer', data.prediction, data.confidence, data.requires_attention);
+      }
+
     } catch (err) {
       setError(err.message || 'Failed to connect to the diagnosis server.');
     } finally {
@@ -84,7 +134,7 @@ const AlzheimerDashboard = () => {
       <header style={{ marginBottom: '2rem' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
           <h2 style={{ fontSize: '1.8rem', fontWeight: 'bold', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.75rem', margin: 0 }}>
-            <Zap color="#f97316" size={28} />
+            <Zap color={ACCENT} size={28} />
             Alzheimer's Detection — v2
           </h2>
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', background: 'rgba(249,115,22,0.08)', border: '1px solid rgba(249,115,22,0.2)', padding: '0.3rem 0.8rem', borderRadius: '20px' }}>
@@ -92,13 +142,21 @@ const AlzheimerDashboard = () => {
           </p>
         </div>
         <p style={{ color: 'var(--text-secondary)', marginTop: '0.75rem' }}>
-          Higher-accuracy Alzheimer's MRI classification using an EfficientNetV2B0 backbone fine-tuned
-          on the Kaggle Alzheimer MRI Dataset. Classifies into 4 dementia stages with per-class probabilities and Grad-CAM visualization.
+          Patient-linked Alzheimer's MRI classification with progression tracking and environmental correlation.
+          Classifies into 4 dementia stages with Grad-CAM visualization.
         </p>
-        <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.75rem', padding: '0.4rem 0.9rem', background: 'rgba(249,115,22,0.08)', borderRadius: '20px', border: '1px solid rgba(249,115,22,0.15)', fontSize: '0.8rem', color: '#f97316' }}>
-          Model: alzheimers_mobilenet_v2.h5 &nbsp;|&nbsp; 4 classes &nbsp;|&nbsp; 224×224 input
-        </div>
       </header>
+
+      {/* Patient Panel */}
+      <PatientPanel
+        patients={patients}
+        selectedPatientId={selectedPatientId}
+        onSelectPatient={(id) => { setSelectedPatientId(id); setResult(null); setAgenticResult(null); setError(null); }}
+        aqi={envData?.aqi}
+        envLoading={envLoading}
+        modelType="alzheimer"
+        accentColor={ACCENT}
+      />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(350px, 1fr))', gap: '2rem' }}>
 
@@ -112,17 +170,17 @@ const AlzheimerDashboard = () => {
               onDragOver={handleDrag} onDrop={handleDrop}
               onClick={() => fileInputRef.current?.click()}
               style={{
-                border: `2px dashed ${dragActive ? '#f97316' : 'rgba(255,255,255,0.2)'}`,
+                border: `2px dashed ${dragActive ? ACCENT : 'rgba(255,255,255,0.2)'}`,
                 borderRadius: '12px', padding: '3rem 2rem', textAlign: 'center', cursor: 'pointer',
                 background: dragActive ? 'rgba(249,115,22,0.05)' : 'rgba(255,255,255,0.02)',
                 display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem',
                 flex: 1, justifyContent: 'center', transition: 'all 0.3s ease'
               }}
             >
-              <UploadCloud size={48} color={dragActive ? '#f97316' : 'var(--text-secondary)'} />
+              <UploadCloud size={48} color={dragActive ? ACCENT : 'var(--text-secondary)'} />
               <div>
                 <p style={{ color: 'var(--text-primary)', fontWeight: '500', marginBottom: '0.5rem' }}>Click or drag MRI scan here</p>
-                <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>JPEG, PNG — any resolution (auto-resized)</p>
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>JPEG, PNG — auto-resized to 224×224</p>
               </div>
               <input ref={fileInputRef} type="file" accept="image/*" onChange={handleChange} style={{ display: 'none' }} />
             </div>
@@ -142,24 +200,24 @@ const AlzheimerDashboard = () => {
             </div>
           )}
 
-          <button onClick={analyzeScan} disabled={!selectedFile || isAnalyzing}
+          <button onClick={analyzeScan} disabled={!selectedFile || isAnalyzing || !selectedPatientId}
             style={{
               marginTop: '1.5rem', width: '100%', padding: '1rem',
-              background: !selectedFile || isAnalyzing ? 'rgba(255,255,255,0.1)' : '#f97316',
-              color: !selectedFile || isAnalyzing ? 'var(--text-secondary)' : '#fff',
+              background: !selectedFile || isAnalyzing || !selectedPatientId ? 'rgba(255,255,255,0.1)' : ACCENT,
+              color: !selectedFile || isAnalyzing || !selectedPatientId ? 'var(--text-secondary)' : '#fff',
               border: 'none', borderRadius: '8px', fontWeight: '600',
-              cursor: !selectedFile || isAnalyzing ? 'not-allowed' : 'pointer',
+              cursor: !selectedFile || isAnalyzing || !selectedPatientId ? 'not-allowed' : 'pointer',
               transition: 'background 0.3s ease', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem'
             }}>
             {isAnalyzing ? (
               <>
                 <div style={{ width: '16px', height: '16px', border: '2px solid rgba(255,255,255,0.3)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
-                Analyzing with EfficientNetV2...
+                Analyzing with EfficientNetV2…
               </>
             ) : (
               <>
                 <FileImage size={18} />
-                Run v2 Alzheimer's Analysis
+                {selectedPatientId ? "Run Patient-Linked Analysis" : "Select a Patient First"}
               </>
             )}
           </button>
@@ -172,29 +230,36 @@ const AlzheimerDashboard = () => {
         {/* Results Panel */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
           <div className="glass-panel" style={{ padding: '2rem', flex: 1 }}>
-            <h3 style={{ fontSize: '1.1rem', marginBottom: '1.5rem', color: 'var(--text-primary)' }}>v2 Diagnosis Results</h3>
+            <h3 style={{ fontSize: '1.1rem', marginBottom: '1.5rem', color: 'var(--text-primary)' }}>Diagnosis Results</h3>
 
             <div style={{ minHeight: '200px', display: 'flex', flexDirection: 'column', justifyContent: result ? 'flex-start' : 'center', alignItems: result ? 'stretch' : 'center', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', padding: '1.5rem', border: '1px solid rgba(255,255,255,0.05)' }}>
-
               {!result && !isAnalyzing && (
                 <div style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>
                   <Zap size={48} style={{ opacity: 0.2, margin: '0 auto 1rem' }} />
-                  <p>Upload an MRI scan to classify dementia stage using EfficientNetV2B0.</p>
+                  <p>{selectedPatientId ? 'Upload an MRI scan to classify dementia stage.' : 'Select a patient, then upload an MRI scan.'}</p>
                 </div>
               )}
 
               {isAnalyzing && (
-                <div style={{ textAlign: 'center', color: '#f97316' }}>
+                <div style={{ textAlign: 'center', color: ACCENT }}>
                   <Zap size={48} style={{ opacity: 0.8, margin: '0 auto 1rem', animation: 'pulse 1.5s infinite' }} />
-                  <p>Running EfficientNetV2 inference...</p>
+                  <p>Running EfficientNetV2 + contextual analysis…</p>
                   <div style={{ width: '100%', height: '4px', background: 'rgba(255,255,255,0.1)', borderRadius: '2px', marginTop: '1rem', overflow: 'hidden' }}>
-                    <div style={{ height: '100%', background: '#f97316', width: '65%', animation: 'slide 1.5s linear infinite' }} />
+                    <div style={{ height: '100%', background: ACCENT, width: '65%', animation: 'slide 1.5s linear infinite' }} />
                   </div>
                 </div>
               )}
 
               {result && sev && (
                 <div style={{ animation: 'fadeIn 0.5s ease' }}>
+                  {/* Patient ID strip */}
+                  {agenticResult?.patient_id && (
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.75rem', padding: '0.4rem 0.75rem', background: 'rgba(255,255,255,0.04)', borderRadius: '6px', display: 'flex', justifyContent: 'space-between' }}>
+                      <span>Patient: <strong style={{ color: 'var(--text-primary)' }}>{agenticResult.patient_id}</strong></span>
+                      <span>{new Date().toLocaleString()}</span>
+                    </div>
+                  )}
+
                   {/* Primary Badge */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', padding: '1.5rem', background: sev.bg, border: `1px solid ${sev.border}`, borderRadius: '12px', marginBottom: '1.5rem' }}>
                     {HIGH_RISK.has(result.prediction) ? <AlertTriangle size={32} color={sev.text} /> : <CheckCircle size={32} color={sev.text} />}
@@ -218,9 +283,41 @@ const AlzheimerDashboard = () => {
                     </div>
                   </div>
 
-                  {/* Per-class probability bars */}
+                  {/* Progression / History Comparison */}
+                  {agenticResult?.history_comparison && (
+                    <div style={{ padding: '1rem', borderRadius: '10px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', marginBottom: '1rem', display: 'flex', gap: '0.75rem', alignItems: 'flex-start' }}>
+                      <TrendingUp size={18} color={ACCENT} style={{ marginTop: '2px', flexShrink: 0 }} />
+                      <div>
+                        <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Progression Tracking</p>
+                        <p style={{ fontSize: '0.88rem', color: 'var(--text-primary)', lineHeight: '1.5' }}>{agenticResult.history_comparison}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Environmental Insight */}
+                  {agenticResult?.environmental_insight && (
+                    <div style={{ padding: '1rem', borderRadius: '10px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', marginBottom: '1rem', display: 'flex', gap: '0.75rem', alignItems: 'flex-start' }}>
+                      <ShieldAlert size={18} color={agenticResult.hasWarning ? 'var(--risk-critical)' : '#10b981'} style={{ marginTop: '2px', flexShrink: 0 }} />
+                      <div>
+                        <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Environmental Insight</p>
+                        <p style={{ fontSize: '0.88rem', color: 'var(--text-primary)', lineHeight: '1.5' }}>{agenticResult.environmental_insight}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Agentic Assessment */}
+                  {agenticResult?.reason && (
+                    <div style={{ padding: '1rem', borderRadius: '10px', border: `1px solid ${agenticResult.hasWarning ? 'rgba(239,68,68,0.3)' : 'rgba(255,255,255,0.1)'}`, background: agenticResult.hasWarning ? 'rgba(239,68,68,0.05)' : `rgba(249,115,22,0.05)`, marginBottom: '1rem' }}>
+                      <h4 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: agenticResult.hasWarning ? 'var(--risk-critical)' : ACCENT, marginBottom: '0.5rem', fontSize: '0.9rem' }}>
+                        <ShieldAlert size={16} /> Agentic Assessment · <span style={{ fontSize: '0.8rem' }}>{agenticResult.level}</span>
+                      </h4>
+                      <p style={{ fontSize: '0.85rem', lineHeight: '1.6', color: 'var(--text-primary)' }}>{agenticResult.reason}</p>
+                    </div>
+                  )}
+
+                  {/* Stage Probabilities */}
                   {result.all_probabilities && (
-                    <div style={{ background: 'rgba(0,0,0,0.15)', padding: '1rem', borderRadius: '8px', marginTop: '1rem' }}>
+                    <div style={{ background: 'rgba(0,0,0,0.15)', padding: '1rem', borderRadius: '8px', marginTop: '0.5rem' }}>
                       <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginBottom: '0.75rem' }}>Stage Probabilities</p>
                       {Object.entries(result.all_probabilities)
                         .sort(([, a], [, b]) => b - a)
