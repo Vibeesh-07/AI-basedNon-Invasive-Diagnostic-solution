@@ -6,7 +6,7 @@
 
 set -e
 
-echo "🩺 AI-based Non-Invasive Diagnostic Solution — Backend"
+echo "🩺 Sentinel 3 — Backend"
 echo "======================================================="
 
 cd "$(dirname "$0")"

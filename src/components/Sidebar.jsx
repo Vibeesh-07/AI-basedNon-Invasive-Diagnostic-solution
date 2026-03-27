@@ -45,9 +45,9 @@ function Sidebar({ activeRole, setActiveRole, isOpen, setIsOpen }) {
         padding: isOpen ? '2rem 1rem' : '0'
       }}>
         <div style={{ marginBottom: '3rem', whiteSpace: 'nowrap' }}>
-          <h1 style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '1.15rem', color: 'var(--text-primary)' }}>
+          <h1 style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '1.25rem', color: 'var(--text-primary)' }}>
             <Shield size={28} color="var(--accent-teal)" />
-            Medical Assistant
+            Sentinel 3
           </h1>
           <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>EHR v2.1.0 (Agentic)</p>
         </div>
