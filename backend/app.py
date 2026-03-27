@@ -2,12 +2,12 @@
 Flask API Backend for Sentinel 3 — AI-based Non-Invasive Diagnostic Solution
 
 Models:
-  1. Brain Tumor — HuggingFace: Saitama30/brain_tumor_model.h5
+  1. Brain Tumor  — HuggingFace: Saitama30/brain_tumor_model.h5  (TensorFlow/Keras)
      Input: (None, 128, 128, 3)
      Endpoint: POST /predict/brain
 
-  2. Skin Cancer — Local: Models/Skin Cancer.h5
-     Input: (None, 28, 28, 3)   [auto-resized from any uploaded image]
+  2. Skin Cancer  — Local: Models/ham10000.pt  (Ultralytics YOLO segmentation)
+     Task: Segmentation  |  Classes: {0: 'cancer'}  |  Input: 640x640
      Endpoint: POST /predict/skin
 
 Shared Endpoints:
@@ -29,28 +29,15 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)
 
+# ─── Paths ────────────────────────────────────────────────────────────────────
+BASE_DIR        = os.path.dirname(os.path.abspath(__file__))
+SKIN_MODEL_PATH = os.path.join(BASE_DIR, "..", "Models", "ham10000.pt")
+
 # ─── Model registry ───────────────────────────────────────────────────────────
+brain_model = None
+skin_yolo   = None
 
-brain_model = None           # lazy-loaded
-skin_model = None            # lazy-loaded
-skin_class_labels = None     # resolved at load time from model output shape
-
-BRAIN_LABELS  = ["Glioma Tumor", "Meningioma Tumor", "No Tumor", "Pituitary Tumor"]
-
-# HAM10000 7-class labels (most common for 28×28 skin models)
-SKIN_LABELS_7 = [
-    "Actinic Keratosis",
-    "Basal Cell Carcinoma",
-    "Benign Keratosis",
-    "Dermatofibroma",
-    "Melanoma",
-    "Melanocytic Nevi",
-    "Vascular Lesion"
-]
-# Fallback: binary
-SKIN_LABELS_2  = ["Benign", "Malignant"]
-
-SKIN_MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "Models", "Skin Cancer.h5")
+BRAIN_LABELS = ["Glioma Tumor", "Meningioma Tumor", "No Tumor", "Pituitary Tumor"]
 
 
 # ─── Loaders ──────────────────────────────────────────────────────────────────
@@ -69,38 +56,26 @@ def load_brain_model():
 
 
 def load_skin_model():
-    global skin_model, skin_class_labels
-    if skin_model is not None:
-        return skin_model
-    import tensorflow as tf
+    global skin_yolo
+    if skin_yolo is not None:
+        return skin_yolo
+    from ultralytics import YOLO
     abs_path = os.path.abspath(SKIN_MODEL_PATH)
-    logger.info(f"Loading skin cancer model from: {abs_path}")
-    skin_model = tf.keras.models.load_model(abs_path, compile=False)
-    num_classes = skin_model.output_shape[-1]
-    logger.info(f"Skin model loaded. Input: {skin_model.input_shape}, Classes: {num_classes}")
-    # Resolve labels based on output size
-    if num_classes == 7:
-        skin_class_labels = SKIN_LABELS_7
-    elif num_classes == 2:
-        skin_class_labels = SKIN_LABELS_2
-    else:
-        skin_class_labels = [f"Class {i}" for i in range(num_classes)]
-    return skin_model
+    logger.info(f"Loading YOLO skin cancer model from: {abs_path}")
+    skin_yolo = YOLO(abs_path)
+    logger.info(f"Skin model loaded. Task: {skin_yolo.task} | Classes: {skin_yolo.names}")
+    return skin_yolo
 
 
-# ─── Preprocessing ────────────────────────────────────────────────────────────
+# ─── Brain helpers ────────────────────────────────────────────────────────────
 
-def preprocess(image_bytes: bytes, size: tuple) -> np.ndarray:
-    """Resize image to target size, normalise to [0,1], return (1, H, W, 3)."""
-    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    img = img.resize(size, Image.LANCZOS)
+def preprocess_brain(image_bytes: bytes) -> np.ndarray:
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB").resize((128, 128), Image.LANCZOS)
     arr = np.array(img, dtype=np.float32) / 255.0
     return np.expand_dims(arr, axis=0)
 
 
-# ─── Grad-CAM ─────────────────────────────────────────────────────────────────
-
-def generate_gradcam(m, input_tensor: np.ndarray, class_index: int, display_size: tuple):
+def generate_gradcam(m, input_tensor: np.ndarray, class_index: int):
     try:
         import tensorflow as tf
         import cv2
@@ -118,12 +93,10 @@ def generate_gradcam(m, input_tensor: np.ndarray, class_index: int, display_size
             inputs=m.inputs,
             outputs=[m.get_layer(last_conv).output, m.output]
         )
-
         tensor = tf.cast(input_tensor, tf.float32)
         with tf.GradientTape() as tape:
             conv_outputs, predictions = grad_model(tensor)
             loss = predictions[:, class_index]
-
         grads = tape.gradient(loss, conv_outputs)
         if grads is None:
             return None
@@ -135,12 +108,10 @@ def generate_gradcam(m, input_tensor: np.ndarray, class_index: int, display_size
         heatmap = tf.maximum(heatmap, 0) / (tf.math.reduce_max(heatmap) + 1e-8)
         heatmap = heatmap.numpy()
 
-        h, w = display_size
+        h, w = 224, 224
         heatmap_resized = cv2.resize(heatmap, (w, h))
         heatmap_colored = cm.jet(heatmap_resized)[:, :, :3]
         heatmap_colored = np.uint8(255 * heatmap_colored)
-
-        # Scale original back to display size for overlay
         orig = np.uint8(input_tensor[0] * 255)
         orig_resized = cv2.resize(orig, (w, h))
         overlay = cv2.addWeighted(orig_resized, 0.6, heatmap_colored, 0.4, 0)
@@ -153,26 +124,51 @@ def generate_gradcam(m, input_tensor: np.ndarray, class_index: int, display_size
         return None
 
 
-# ─── Shared prediction helper ─────────────────────────────────────────────────
+# ─── Skin (YOLO) helper ───────────────────────────────────────────────────────
 
-def run_prediction(image_bytes, model, labels, input_size, safe_label=None):
-    tensor = preprocess(image_bytes, input_size)
-    preds  = model.predict(tensor, verbose=0)[0]
-    idx    = int(np.argmax(preds))
-    conf   = float(preds[idx]) * 100
-    label  = labels[idx]
-    requires_attention = label != safe_label if safe_label else True
-    heatmap = generate_gradcam(model, tensor, idx, display_size=(224, 224))
+def run_skin_inference(image_bytes: bytes):
+    """
+    Run YOLO segmentation on skin lesion image.
+    Returns prediction, confidence, detection_count, annotated image.
+    """
+    import cv2
+
+    model = load_skin_model()
+
+    np_arr = np.frombuffer(image_bytes, np.uint8)
+    img_cv = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+    results = model(img_cv, imgsz=640, conf=0.25, verbose=False)
+    result  = results[0]
+
+    detections = []
+    if result.boxes is not None and len(result.boxes) > 0:
+        for box in result.boxes:
+            conf = float(box.conf[0])
+            cls  = int(box.cls[0])
+            detections.append({"class": model.names[cls], "confidence": round(conf * 100, 2)})
+
+    detections.sort(key=lambda x: x["confidence"], reverse=True)
+
+    detection_count   = len(detections)
+    top_confidence    = detections[0]["confidence"] if detections else 0.0
+    prediction        = "Cancer Detected" if detection_count > 0 else "No Cancer Detected"
+    requires_attention = detection_count > 0
+
+    # Annotated segmentation image
+    annotated_bgr = result.plot()
+    annotated_rgb = cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB)
+    buf = io.BytesIO()
+    Image.fromarray(annotated_rgb).save(buf, format="PNG")
+    annotated_b64 = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
     return {
-        "prediction": label,
-        "confidence": round(conf, 2),
-        "class_index": idx,
-        "all_probabilities": {
-            labels[i]: round(float(preds[i]) * 100, 2)
-            for i in range(len(preds))
-        },
+        "prediction":         prediction,
+        "confidence":         top_confidence,
+        "detection_count":    detection_count,
+        "detections":         detections,
         "requires_attention": requires_attention,
-        "heatmap": heatmap
+        "heatmap":            annotated_b64
     }
 
 
@@ -181,9 +177,9 @@ def run_prediction(image_bytes, model, labels, input_size, safe_label=None):
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({
-        "status": "ok",
+        "status":             "ok",
         "brain_model_loaded": brain_model is not None,
-        "skin_model_loaded": skin_model is not None,
+        "skin_model_loaded":  skin_yolo is not None,
     })
 
 
@@ -192,12 +188,22 @@ def predict_brain():
     if "file" not in request.files or request.files["file"].filename == "":
         return jsonify({"error": "No file provided."}), 400
     try:
-        m = load_brain_model()
-        result = run_prediction(
-            request.files["file"].read(), m, BRAIN_LABELS,
-            input_size=(128, 128), safe_label="No Tumor"
-        )
-        return jsonify(result)
+        image_bytes  = request.files["file"].read()
+        m            = load_brain_model()
+        input_tensor = preprocess_brain(image_bytes)
+        preds        = m.predict(input_tensor, verbose=0)[0]
+        idx          = int(np.argmax(preds))
+        conf         = float(preds[idx]) * 100
+        label        = BRAIN_LABELS[idx]
+        heatmap      = generate_gradcam(m, input_tensor, idx)
+        return jsonify({
+            "prediction":        label,
+            "confidence":        round(conf, 2),
+            "class_index":       idx,
+            "all_probabilities": {BRAIN_LABELS[i]: round(float(preds[i]) * 100, 2) for i in range(len(preds))},
+            "requires_attention": label != "No Tumor",
+            "heatmap":           heatmap
+        })
     except Exception as e:
         logger.exception("Brain prediction error")
         return jsonify({"error": str(e)}), 500
@@ -208,18 +214,14 @@ def predict_skin():
     if "file" not in request.files or request.files["file"].filename == "":
         return jsonify({"error": "No file provided."}), 400
     try:
-        m = load_skin_model()
-        result = run_prediction(
-            request.files["file"].read(), m, skin_class_labels,
-            input_size=(28, 28), safe_label=None   # All skin findings are clinically relevant
-        )
+        result = run_skin_inference(request.files["file"].read())
         return jsonify(result)
     except Exception as e:
         logger.exception("Skin prediction error")
         return jsonify({"error": str(e)}), 500
 
 
-# Backward-compat alias → old /predict now calls brain endpoint
+# Backward-compat alias
 @app.route("/predict", methods=["POST"])
 def predict_legacy():
     return predict_brain()

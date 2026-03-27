@@ -3,9 +3,6 @@ import { UploadCloud, CheckCircle, AlertTriangle, FileImage, X, Microscope } fro
 
 const API_URL = 'http://localhost:5000';
 
-// Skin conditions that are clinically very concerning
-const HIGH_RISK_CONDITIONS = ['Melanoma', 'Basal Cell Carcinoma', 'Actinic Keratosis', 'Malignant'];
-
 const SkinCancerDashboard = () => {
   const [dragActive, setDragActive] = useState(false);
   const [selectedImage, setSelectedImage] = useState(null);
@@ -83,7 +80,7 @@ const SkinCancerDashboard = () => {
     }
   };
 
-  const isHighRisk = result ? HIGH_RISK_CONDITIONS.some(c => result.prediction.includes(c)) : false;
+  const isHighRisk = result?.requires_attention ?? false;
 
   return (
     <div style={{ animation: 'fadeIn 0.5s ease' }}>
@@ -197,17 +194,22 @@ const SkinCancerDashboard = () => {
                   <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', padding: '1.5rem', background: isHighRisk ? 'rgba(239,68,68,0.1)' : 'rgba(16,185,129,0.1)', border: `1px solid ${isHighRisk ? 'rgba(239,68,68,0.2)' : 'rgba(16,185,129,0.2)'}`, borderRadius: '12px', marginBottom: '1.5rem' }}>
                     {isHighRisk ? <AlertTriangle size={32} color="var(--risk-critical)" /> : <CheckCircle size={32} color="var(--risk-low)" />}
                     <div>
-                      <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '0.25rem' }}>Skin Classification</p>
+                      <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '0.25rem' }}>YOLO Segmentation Result</p>
                       <h4 style={{ fontSize: '1.4rem', fontWeight: 'bold', color: isHighRisk ? 'var(--risk-critical)' : 'var(--risk-low)', margin: 0 }}>
                         {result.prediction}
                       </h4>
+                      {result.detection_count > 0 && (
+                        <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
+                          {result.detection_count} region{result.detection_count > 1 ? 's' : ''} detected
+                        </p>
+                      )}
                     </div>
                   </div>
 
-                  {/* Confidence */}
+                  {/* Top confidence */}
                   <div style={{ background: 'rgba(0,0,0,0.2)', padding: '1.25rem', borderRadius: '12px', marginBottom: '1rem' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-                      <span style={{ color: 'var(--text-secondary)' }}>Model Confidence</span>
+                      <span style={{ color: 'var(--text-secondary)' }}>Top Detection Confidence</span>
                       <span style={{ color: 'var(--text-primary)', fontWeight: 'bold' }}>{result.confidence}%</span>
                     </div>
                     <div style={{ width: '100%', height: '8px', background: 'rgba(255,255,255,0.1)', borderRadius: '4px', overflow: 'hidden' }}>
@@ -215,31 +217,31 @@ const SkinCancerDashboard = () => {
                     </div>
                   </div>
 
-                  {/* All class probabilities */}
-                  {result.all_probabilities && (
+                  {/* Per-detection confidence list */}
+                  {result.detections && result.detections.length > 0 && (
                     <div style={{ background: 'rgba(0,0,0,0.15)', padding: '1rem', borderRadius: '8px', marginTop: '1rem' }}>
-                      <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginBottom: '0.75rem' }}>All Class Probabilities</p>
-                      {Object.entries(result.all_probabilities).sort(([, a], [, b]) => b - a).map(([label, prob]) => (
-                        <div key={label} style={{ marginBottom: '0.5rem' }}>
+                      <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginBottom: '0.75rem' }}>Detected Regions</p>
+                      {result.detections.map((d, i) => (
+                        <div key={i} style={{ marginBottom: '0.5rem' }}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', marginBottom: '0.2rem' }}>
-                            <span style={{ color: label === result.prediction ? 'var(--text-primary)' : 'var(--text-secondary)', fontWeight: label === result.prediction ? '600' : '400' }}>{label}</span>
-                            <span style={{ color: 'var(--text-secondary)' }}>{prob}%</span>
+                            <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>Region {i + 1} — {d.class}</span>
+                            <span style={{ color: 'var(--text-secondary)' }}>{d.confidence}%</span>
                           </div>
                           <div style={{ width: '100%', height: '4px', background: 'rgba(255,255,255,0.08)', borderRadius: '2px', overflow: 'hidden' }}>
-                            <div style={{ height: '100%', width: `${prob}%`, background: label === result.prediction ? (isHighRisk ? 'var(--risk-critical)' : 'var(--accent-teal)') : 'rgba(255,255,255,0.15)' }} />
+                            <div style={{ height: '100%', width: `${d.confidence}%`, background: 'var(--risk-critical)' }} />
                           </div>
                         </div>
                       ))}
                     </div>
                   )}
 
-                  {/* Next steps */}
+                  {/* Clinical Recommendation */}
                   <div style={{ marginTop: '1.25rem', padding: '1rem', borderLeft: `3px solid ${isHighRisk ? 'var(--risk-critical)' : 'var(--accent-teal)'}`, background: isHighRisk ? 'rgba(239,68,68,0.05)' : 'rgba(20,184,166,0.05)' }}>
                     <h5 style={{ color: 'var(--text-primary)', marginBottom: '0.5rem', fontSize: '0.9rem' }}>Clinical Recommendation</h5>
                     <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', lineHeight: '1.5' }}>
                       {isHighRisk
-                        ? `${result.prediction} is a high-risk skin condition. Immediate referral to a dermatologist for biopsy and further evaluation is recommended.`
-                        : `${result.prediction} is typically a lower-risk finding. A follow-up appointment with a dermatologist is advised for clinical confirmation.`}
+                        ? `${result.detection_count} potential cancerous region${result.detection_count > 1 ? 's' : ''} detected. Immediate referral to a dermatologist for biopsy and further evaluation is recommended.`
+                        : 'No cancerous regions detected in this image. Routine dermatological follow-up is advised.'}
                     </p>
                   </div>
                 </div>
@@ -247,15 +249,15 @@ const SkinCancerDashboard = () => {
             </div>
           </div>
 
-          {/* Grad-CAM Heatmap */}
+          {/* Annotated Segmentation Mask */}
           {result?.heatmap && (
             <div className="glass-panel" style={{ padding: '2rem' }}>
               <h3 style={{ fontSize: '1.1rem', marginBottom: '1rem', color: 'var(--text-primary)' }}>
-                🎯 AI Focus Area (Grad-CAM Heatmap)
+                🎯 YOLO Segmentation Overlay
               </h3>
-              <img src={result.heatmap} alt="Grad-CAM Heatmap" style={{ width: '100%', borderRadius: '8px' }} />
+              <img src={result.heatmap} alt="YOLO Segmentation" style={{ width: '100%', borderRadius: '8px' }} />
               <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginTop: '0.75rem' }}>
-                Brighter regions indicate areas the model weighted most heavily in its classification decision.
+                Coloured masks and bounding boxes show regions the model identified as cancerous.
               </p>
             </div>
           )}
