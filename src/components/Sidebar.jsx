@@ -1,4 +1,4 @@
-import { Shield, Stethoscope, Settings, Menu, X, Activity, Microscope } from 'lucide-react';
+import { Shield, Stethoscope, Settings, Menu, X, Activity, Microscope, Scan } from 'lucide-react';
 
 function Sidebar({ activeRole, setActiveRole, isOpen, setIsOpen }) {
   const roles = [
@@ -6,7 +6,8 @@ function Sidebar({ activeRole, setActiveRole, isOpen, setIsOpen }) {
     { id: 'doctor', label: 'Outbreak: Doctor Portal', icon: Stethoscope, color: 'var(--accent-purple)' },
     { id: 'admin', label: 'Outbreak: Admin Console', icon: Settings, color: 'var(--accent-blue)' },
     { id: 'braintumor', label: 'Brain Tumor Diagnosis', icon: Activity, color: 'var(--accent-purple)' },
-    { id: 'skincancer', label: 'Skin Cancer Diagnosis', icon: Microscope, color: 'var(--accent-teal)' },
+    { id: 'skincancer', label: 'Skin Cancer — YOLO', icon: Microscope, color: 'var(--accent-teal)' },
+    { id: 'skincancer2', label: 'Skin Cancer — CNN v2', icon: Scan, color: 'var(--accent-blue)' },
   ];
 
   return (

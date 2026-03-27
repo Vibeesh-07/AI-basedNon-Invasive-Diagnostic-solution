@@ -10,6 +10,10 @@ Models:
      Task: Segmentation  |  Classes: {0: 'cancer'}  |  Input: 640x640
      Endpoint: POST /predict/skin
 
+  3. Skin Cancer v2 — Local: Models/cnn_fc_model.h5  (Custom 5-block CNN)
+     Input: (None, 160, 160, 3)  |  9 HAM10000 classes
+     Endpoint: POST /predict/skin2
+
 Shared Endpoints:
   GET /health  — status of all loaded models
 """
@@ -32,12 +36,29 @@ CORS(app)
 # ─── Paths ────────────────────────────────────────────────────────────────────
 BASE_DIR        = os.path.dirname(os.path.abspath(__file__))
 SKIN_MODEL_PATH = os.path.join(BASE_DIR, "..", "Models", "ham10000.pt")
+SKIN2_MODEL_PATH = os.path.join(BASE_DIR, "..", "Models", "cnn_fc_model.h5")
 
 # ─── Model registry ───────────────────────────────────────────────────────────
 brain_model = None
 skin_yolo   = None
+skin2_model = None
 
 BRAIN_LABELS = ["Glioma Tumor", "Meningioma Tumor", "No Tumor", "Pituitary Tumor"]
+
+# HAM10000 9-class labels (confirmed from model output shape and layer structure)
+SKIN2_LABELS = [
+    "Actinic Keratosis",
+    "Basal Cell Carcinoma",
+    "Benign Keratosis",
+    "Dermatofibroma",
+    "Melanocytic Nevi",
+    "Melanoma",
+    "Squamous Cell Carcinoma",
+    "Vascular Lesion",
+    "Unknown"
+]
+
+SKIN2_HIGH_RISK = {"Melanoma", "Basal Cell Carcinoma", "Actinic Keratosis", "Squamous Cell Carcinoma"}
 
 
 # ─── Loaders ──────────────────────────────────────────────────────────────────
@@ -65,6 +86,39 @@ def load_skin_model():
     skin_yolo = YOLO(abs_path)
     logger.info(f"Skin model loaded. Task: {skin_yolo.task} | Classes: {skin_yolo.names}")
     return skin_yolo
+
+
+def load_skin2_model():
+    """Build cnn_fc_model architecture and load weights (weights-only .h5 file)."""
+    global skin2_model
+    if skin2_model is not None:
+        return skin2_model
+    import tensorflow as tf
+    abs_path = os.path.abspath(SKIN2_MODEL_PATH)
+    logger.info(f"Building CNN architecture and loading weights from: {abs_path}")
+
+    inputs = tf.keras.Input(shape=(160, 160, 3))
+    x = tf.keras.layers.Rescaling(1./255)(inputs)
+    x = tf.keras.layers.Conv2D(32, 3, padding='same', activation='relu', name='conv2d_10')(x)
+    x = tf.keras.layers.MaxPooling2D(name='max_pooling2d_10')(x)
+    x = tf.keras.layers.Conv2D(64, 3, padding='same', activation='relu', name='conv2d_11')(x)
+    x = tf.keras.layers.MaxPooling2D(name='max_pooling2d_11')(x)
+    x = tf.keras.layers.Conv2D(128, 3, padding='same', activation='relu', name='conv2d_12')(x)
+    x = tf.keras.layers.MaxPooling2D(name='max_pooling2d_12')(x)
+    x = tf.keras.layers.Conv2D(256, 3, padding='same', activation='relu', name='conv2d_13')(x)
+    x = tf.keras.layers.MaxPooling2D(name='max_pooling2d_13')(x)
+    x = tf.keras.layers.Conv2D(512, 3, padding='same', activation='relu', name='conv2d_14')(x)
+    x = tf.keras.layers.MaxPooling2D(name='max_pooling2d_14')(x)
+    x = tf.keras.layers.Flatten(name='flatten_2')(x)
+    x = tf.keras.layers.Dropout(0.3, name='dropout_3')(x)
+    x = tf.keras.layers.Dense(1024, activation='relu', name='dense_4')(x)
+    x = tf.keras.layers.Dropout(0.3, name='dropout_4')(x)
+    x = tf.keras.layers.Dense(9, activation='softmax', name='dense_5')(x)
+    m = tf.keras.Model(inputs, x)
+    m.load_weights(abs_path, by_name=True)
+    skin2_model = m
+    logger.info(f"Skin v2 model loaded. Input: {m.input_shape}, Output: {m.output_shape}")
+    return skin2_model
 
 
 # ─── Brain helpers ────────────────────────────────────────────────────────────
@@ -124,20 +178,13 @@ def generate_gradcam(m, input_tensor: np.ndarray, class_index: int):
         return None
 
 
-# ─── Skin (YOLO) helper ───────────────────────────────────────────────────────
+# ─── Skin v1 (YOLO) helper ────────────────────────────────────────────────────
 
 def run_skin_inference(image_bytes: bytes):
-    """
-    Run YOLO segmentation on skin lesion image.
-    Returns prediction, confidence, detection_count, annotated image.
-    """
     import cv2
-
     model = load_skin_model()
-
     np_arr = np.frombuffer(image_bytes, np.uint8)
     img_cv = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-
     results = model(img_cv, imgsz=640, conf=0.25, verbose=False)
     result  = results[0]
 
@@ -147,28 +194,56 @@ def run_skin_inference(image_bytes: bytes):
             conf = float(box.conf[0])
             cls  = int(box.cls[0])
             detections.append({"class": model.names[cls], "confidence": round(conf * 100, 2)})
-
     detections.sort(key=lambda x: x["confidence"], reverse=True)
 
     detection_count   = len(detections)
     top_confidence    = detections[0]["confidence"] if detections else 0.0
     prediction        = "Cancer Detected" if detection_count > 0 else "No Cancer Detected"
-    requires_attention = detection_count > 0
 
-    # Annotated segmentation image
     annotated_bgr = result.plot()
     annotated_rgb = cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB)
     buf = io.BytesIO()
     Image.fromarray(annotated_rgb).save(buf, format="PNG")
-    annotated_b64 = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
     return {
         "prediction":         prediction,
         "confidence":         top_confidence,
         "detection_count":    detection_count,
         "detections":         detections,
+        "requires_attention": detection_count > 0,
+        "heatmap":            "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+    }
+
+
+# ─── Skin v2 (CNN) helper ─────────────────────────────────────────────────────
+
+def run_skin2_inference(image_bytes: bytes):
+    """Preprocess to 160×160, run CNN, return prediction + Grad-CAM."""
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB").resize((160, 160), Image.LANCZOS)
+    arr = np.array(img, dtype=np.float32)   # Rescaling layer handles /255 internally
+    input_tensor = np.expand_dims(arr, axis=0)
+
+    m = load_skin2_model()
+    preds = m.predict(input_tensor, verbose=0)[0]
+    idx   = int(np.argmax(preds))
+    conf  = float(preds[idx]) * 100
+    label = SKIN2_LABELS[idx] if idx < len(SKIN2_LABELS) else f"Class {idx}"
+    requires_attention = label in SKIN2_HIGH_RISK
+
+    # Grad-CAM needs normalised tensor
+    norm_tensor = input_tensor / 255.0
+    heatmap = generate_gradcam(m, norm_tensor, idx)
+
+    return {
+        "prediction":        label,
+        "confidence":        round(conf, 2),
+        "class_index":       idx,
+        "all_probabilities": {
+            (SKIN2_LABELS[i] if i < len(SKIN2_LABELS) else f"Class {i}"): round(float(preds[i]) * 100, 2)
+            for i in range(len(preds))
+        },
         "requires_attention": requires_attention,
-        "heatmap":            annotated_b64
+        "heatmap":           heatmap
     }
 
 
@@ -177,9 +252,10 @@ def run_skin_inference(image_bytes: bytes):
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({
-        "status":             "ok",
-        "brain_model_loaded": brain_model is not None,
-        "skin_model_loaded":  skin_yolo is not None,
+        "status":              "ok",
+        "brain_model_loaded":  brain_model is not None,
+        "skin_model_loaded":   skin_yolo is not None,
+        "skin2_model_loaded":  skin2_model is not None,
     })
 
 
@@ -214,10 +290,20 @@ def predict_skin():
     if "file" not in request.files or request.files["file"].filename == "":
         return jsonify({"error": "No file provided."}), 400
     try:
-        result = run_skin_inference(request.files["file"].read())
-        return jsonify(result)
+        return jsonify(run_skin_inference(request.files["file"].read()))
     except Exception as e:
-        logger.exception("Skin prediction error")
+        logger.exception("Skin v1 prediction error")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/predict/skin2", methods=["POST"])
+def predict_skin2():
+    if "file" not in request.files or request.files["file"].filename == "":
+        return jsonify({"error": "No file provided."}), 400
+    try:
+        return jsonify(run_skin2_inference(request.files["file"].read()))
+    except Exception as e:
+        logger.exception("Skin v2 prediction error")
         return jsonify({"error": str(e)}), 500
 
 
@@ -233,6 +319,7 @@ if __name__ == "__main__":
     try:
         load_brain_model()
         load_skin_model()
+        load_skin2_model()
     except Exception as e:
         logger.warning(f"Pre-load warning: {e}")
     app.run(host="0.0.0.0", port=5000, debug=False)

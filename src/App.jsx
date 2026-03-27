@@ -5,6 +5,7 @@ import AdminDashboard from './components/AdminDashboard';
 import DoctorDashboard from './components/DoctorDashboard';
 import BrainTumorDashboard from './components/BrainTumorDashboard';
 import SkinCancerDashboard from './components/SkinCancerDashboard';
+import SkinCancerV2Dashboard from './components/SkinCancerV2Dashboard';
 
 function App() {
   const [activeRole, setActiveRole] = useState('public');
@@ -20,6 +21,8 @@ function App() {
         return <BrainTumorDashboard />;
       case 'skincancer':
         return <SkinCancerDashboard />;
+      case 'skincancer2':
+        return <SkinCancerV2Dashboard />;
       default:
         return <Radar />;
     }
