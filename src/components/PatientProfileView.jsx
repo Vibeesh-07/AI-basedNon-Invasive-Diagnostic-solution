@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import {
   ArrowLeft, Shield, Plus, User, MapPin, Calendar,
-  Heart, Activity, Clock, Wind, ChevronRight,
-  AlertTriangle, CheckCircle, TrendingUp, Loader2
+  Heart, Activity, Wind, ChevronRight,
+  AlertTriangle, CheckCircle, TrendingUp, Loader2,
+  FileText, Sparkles, Copy, Check, RotateCcw
 } from 'lucide-react';
 import { getEnvironmentalData } from '../services/WeatherService';
 import { getDiagnoses } from '../services/PatientDBService';
+import { summarizeTranscription } from '../services/OllamaService';
 
 const MODEL_META = {
   brain:     { label: 'Brain Tumor MRI',     color: '#8b5cf6', bg: 'rgba(139,92,246,0.1)'  },
@@ -14,9 +16,7 @@ const MODEL_META = {
   tb:        { label: 'Tuberculosis X-Ray',  color: '#dc2626', bg: 'rgba(220,38,38,0.1)'   },
 };
 
-const VITAL_icons = {
-  bp: '💉', heartRate: '❤️', spo2: '🫁', temp: '🌡️',
-};
+
 
 function PatientProfileView({ patient, navigate }) {
   const [envData, setEnvData] = useState(null);
@@ -24,6 +24,13 @@ function PatientProfileView({ patient, navigate }) {
   const [firestoreDiagnoses, setFirestoreDiagnoses] = useState([]);
   const [diagLoading, setDiagLoading] = useState(true);
   const [dbStatus, setDbStatus] = useState('checking'); // 'checking' | 'ok' | 'fallback'
+
+  // Transcription state
+  const [transcriptionText, setTranscriptionText] = useState('');
+  const [transcribing, setTranscribing] = useState(false);
+  const [transcriptionResult, setTranscriptionResult] = useState(null);
+  const [transcriptionError, setTranscriptionError] = useState(null);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     if (!patient?.city) return;
@@ -171,26 +178,7 @@ function PatientProfileView({ patient, navigate }) {
           )}
         </div>
 
-        {/* Vitals + Conditions */}
-        {patient.vitals && (
-          <div className="glass-panel" style={{ padding: '1.5rem', marginBottom: '1.5rem', animation: 'fadeIn 0.5s ease' }}>
-            <h3 style={{ fontSize: '0.95rem', fontWeight: 600, marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <Heart size={16} color="var(--risk-high)" />
-              Vitals
-            </h3>
-            <div className="grid-4">
-              {Object.entries(patient.vitals).map(([key, val]) => (
-                <div key={key} style={{ padding: '1rem', borderRadius: '10px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', textAlign: 'center' }}>
-                  <p style={{ fontSize: '1.4rem', marginBottom: '0.25rem' }}>{VITAL_icons[key] || '📊'}</p>
-                  <p style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--text-primary)' }}>{val}</p>
-                  <p style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.06em', marginTop: '0.2rem' }}>
-                    {key === 'bp' ? 'Blood Pressure' : key === 'heartRate' ? 'Heart Rate' : key === 'spo2' ? 'SpO₂' : 'Temperature'}
-                  </p>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+
 
         {/* Diagnosis History */}
         <div className="glass-panel" style={{ padding: 0, overflow: 'hidden', animation: 'fadeIn 0.55s ease' }}>
@@ -299,6 +287,216 @@ function PatientProfileView({ patient, navigate }) {
             </>
           )}
         </div>
+
+        {/* ── Transcription Section ─────────────────────────────────────── */}
+        <div
+          className="glass-panel"
+          style={{ padding: 0, overflow: 'hidden', marginTop: '1.5rem', animation: 'fadeIn 0.6s ease' }}
+        >
+          {/* Header */}
+          <div style={{
+            padding: '1.25rem 1.5rem',
+            borderBottom: '1px solid rgba(255,255,255,0.07)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}>
+            <h3 style={{ fontSize: '1rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <FileText size={18} color="var(--accent-purple)" />
+              Clinical Transcription
+              <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '20px', background: 'rgba(139,92,246,0.1)', color: 'var(--accent-purple)', border: '1px solid rgba(139,92,246,0.2)', fontWeight: 500 }}>
+                gemma3:4b · Ollama
+              </span>
+            </h3>
+            {transcriptionResult && (
+              <button
+                onClick={() => { setTranscriptionResult(null); setTranscriptionText(''); setTranscriptionError(null); }}
+                className="btn-ghost"
+                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '6px 12px', fontSize: '0.8rem' }}
+              >
+                <RotateCcw size={14} /> New Transcription
+              </button>
+            )}
+          </div>
+
+          <div style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+
+            {/* Input area */}
+            {!transcriptionResult && (
+              <>
+                <div style={{ position: 'relative' }}>
+                  <textarea
+                    value={transcriptionText}
+                    onChange={e => setTranscriptionText(e.target.value)}
+                    placeholder={`Paste or type clinical notes, doctor's observations, consultation summaries, or any medical text here…\n\nExample: Patient presented with persistent dry cough for 3 weeks, low-grade fever (38.1°C), and mild fatigue. Chest X-ray shows right upper lobe infiltrates. SpO₂ at 96%.`}
+                    rows={8}
+                    disabled={transcribing}
+                    style={{
+                      resize: 'vertical',
+                      minHeight: '160px',
+                      fontFamily: 'inherit',
+                      fontSize: '0.88rem',
+                      lineHeight: '1.6',
+                      padding: '1rem',
+                      borderRadius: '10px',
+                      background: 'rgba(0,0,0,0.25)',
+                      border: '1px solid rgba(255,255,255,0.1)',
+                      color: 'var(--text-primary)',
+                      width: '100%',
+                      outline: 'none',
+                      transition: 'border-color 0.2s ease',
+                    }}
+                  />
+                  <span style={{
+                    position: 'absolute',
+                    bottom: '0.6rem',
+                    right: '0.75rem',
+                    fontSize: '0.7rem',
+                    color: transcriptionText.length > 4000 ? 'var(--risk-high)' : 'var(--text-muted)',
+                  }}>
+                    {transcriptionText.length} chars
+                  </span>
+                </div>
+
+                {transcriptionError && (
+                  <div style={{ padding: '0.875rem 1rem', borderRadius: '10px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', display: 'flex', alignItems: 'flex-start', gap: '0.6rem' }}>
+                    <AlertTriangle size={16} color="var(--risk-high)" style={{ flexShrink: 0, marginTop: 1 }} />
+                    <div>
+                      <p style={{ fontSize: '0.85rem', color: 'var(--risk-high)', fontWeight: 600, marginBottom: '0.2rem' }}>Summarization Failed</p>
+                      <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{transcriptionError}</p>
+                      <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>Make sure Ollama is running: <code style={{ background: 'rgba(255,255,255,0.07)', padding: '1px 6px', borderRadius: '4px' }}>ollama serve</code></p>
+                    </div>
+                  </div>
+                )}
+
+                <button
+                  onClick={async () => {
+                    if (!transcriptionText.trim()) return;
+                    setTranscribing(true);
+                    setTranscriptionError(null);
+                    try {
+                      const result = await summarizeTranscription(transcriptionText, patient);
+                      setTranscriptionResult(result);
+                    } catch (err) {
+                      setTranscriptionError(err.message || 'Unknown error from Ollama.');
+                    } finally {
+                      setTranscribing(false);
+                    }
+                  }}
+                  disabled={!transcriptionText.trim() || transcribing}
+                  style={{
+                    alignSelf: 'flex-end',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                    padding: '11px 24px',
+                    borderRadius: '10px',
+                    background: !transcriptionText.trim() || transcribing
+                      ? 'rgba(255,255,255,0.07)'
+                      : 'linear-gradient(135deg, #8b5cf6, #6366f1)',
+                    color: !transcriptionText.trim() || transcribing ? 'var(--text-muted)' : '#fff',
+                    border: 'none',
+                    fontWeight: 700,
+                    fontSize: '0.9rem',
+                    cursor: !transcriptionText.trim() || transcribing ? 'not-allowed' : 'pointer',
+                    boxShadow: !transcriptionText.trim() || transcribing ? 'none' : '0 6px 20px rgba(139,92,246,0.4)',
+                    transition: 'all 0.25s ease',
+                  }}
+                >
+                  {transcribing ? (
+                    <>
+                      <Loader2 size={17} style={{ animation: 'spin 1s linear infinite' }} />
+                      Summarizing with gemma3…
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles size={17} />
+                      Generate Summary
+                    </>
+                  )}
+                </button>
+
+                {transcribing && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    <div style={{ height: '4px', background: 'rgba(255,255,255,0.06)', borderRadius: '2px', overflow: 'hidden' }}>
+                      <div style={{ height: '100%', background: 'linear-gradient(90deg, #8b5cf6, #6366f1)', width: '70%', animation: 'slide 1.8s ease-in-out infinite', borderRadius: '2px' }} />
+                    </div>
+                    <p style={{ fontSize: '0.8rem', color: 'var(--accent-purple)', textAlign: 'center' }}>
+                      gemma3:4b is reading the clinical notes…
+                    </p>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Results */}
+            {transcriptionResult && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', animation: 'fadeIn 0.4s ease' }}>
+
+                {/* Flags — shown first if present */}
+                {transcriptionResult.flags?.length > 0 && (
+                  <div style={{ padding: '1rem 1.25rem', borderRadius: '10px', background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.25)' }}>
+                    <h4 style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--risk-high)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <AlertTriangle size={15} /> Critical Flags
+                    </h4>
+                    <ul style={{ paddingLeft: '1.2rem', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                      {transcriptionResult.flags.map((f, i) => (
+                        <li key={i} style={{ fontSize: '0.87rem', color: 'var(--risk-high)', lineHeight: 1.5 }}>{f}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Summary */}
+                <div style={{ padding: '1.25rem', borderRadius: '10px', background: 'rgba(139,92,246,0.06)', border: '1px solid rgba(139,92,246,0.2)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                    <h4 style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--accent-purple)', textTransform: 'uppercase', letterSpacing: '0.06em', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <Sparkles size={14} /> AI Summary
+                    </h4>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(transcriptionResult.summary);
+                        setCopied(true);
+                        setTimeout(() => setCopied(false), 2000);
+                      }}
+                      className="btn-ghost"
+                      style={{ padding: '4px 10px', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+                    >
+                      {copied ? <Check size={13} color="var(--risk-low)" /> : <Copy size={13} />}
+                      {copied ? 'Copied!' : 'Copy'}
+                    </button>
+                  </div>
+                  <p style={{ fontSize: '0.9rem', color: 'var(--text-primary)', lineHeight: 1.65 }}>
+                    {transcriptionResult.summary}
+                  </p>
+                </div>
+
+                {/* Key points */}
+                {transcriptionResult.keyPoints?.length > 0 && (
+                  <div style={{ padding: '1.25rem', borderRadius: '10px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                    <h4 style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--accent-teal)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <CheckCircle size={14} /> Key Clinical Points
+                    </h4>
+                    <ul style={{ paddingLeft: 0, display: 'flex', flexDirection: 'column', gap: '0.5rem', listStyle: 'none' }}>
+                      {transcriptionResult.keyPoints.map((kp, i) => (
+                        <li key={i} style={{ display: 'flex', gap: '0.6rem', alignItems: 'flex-start', fontSize: '0.87rem', color: 'var(--text-primary)', lineHeight: 1.55 }}>
+                          <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent-teal)', flexShrink: 0, marginTop: '0.45rem' }} />
+                          {kp}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Model attribution */}
+                <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textAlign: 'right' }}>
+                  Generated by <strong style={{ color: 'var(--text-secondary)' }}>gemma3:4b</strong> via local Ollama · Not a substitute for clinical judgment.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+
       </div>
     </div>
   );

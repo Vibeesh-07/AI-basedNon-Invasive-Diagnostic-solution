@@ -2,13 +2,14 @@ import React, { useState, useRef, useEffect } from 'react';
 import {
   ArrowLeft, Shield, ChevronRight, UploadCloud, FileImage, X,
   Activity, Scan, Zap, Wind, CheckCircle, AlertTriangle,
-  ShieldAlert, TrendingUp, Save, Loader2, Plus
+  ShieldAlert, TrendingUp, Save, Loader2, Plus, Sparkles
 } from 'lucide-react';
 import { getEnvironmentalData } from '../services/WeatherService';
 import { fetchLocalNews } from '../services/NewsService';
 import { generatePrediction } from '../services/PredictionEngine';
 import { analyzeImageDiagnosisRisk } from '../services/AgenticEHRService';
 import { saveDiagnosis } from '../services/PatientDBService';
+import { generateScanSummary } from '../services/OllamaService';
 
 const API_URL = 'http://localhost:5000';
 
@@ -69,6 +70,12 @@ function DiagnosticPage({ patient, patients, navigate, recordDiagnosis }) {
   const [agenticResult, setAgenticResult] = useState(null);
   const [error, setError] = useState(null);
   const [saveStatus, setSaveStatus] = useState(null); // null | 'saving' | 'saved' | 'failed'
+  
+  // Ollama Summary State
+  const [scanSummary, setScanSummary] = useState(null);
+  const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
+  const [summaryError, setSummaryError] = useState(null);
+  
   const fileInputRef = useRef(null);
 
   const [envData, setEnvData] = useState(null);
@@ -90,6 +97,8 @@ function DiagnosticPage({ patient, patients, navigate, recordDiagnosis }) {
     setAgenticResult(null);
     setError(null);
     setSaveStatus(null);
+    setScanSummary(null);
+    setSummaryError(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -507,6 +516,66 @@ function DiagnosticPage({ patient, patients, navigate, recordDiagnosis }) {
                         <img src={result.heatmap} alt="Grad-CAM" style={{ width: '100%', display: 'block' }} />
                       </div>
                     )}
+
+                    {/* AI Scan Summary Section */}
+                    <div style={{ padding: '1.25rem', borderRadius: '10px', background: 'rgba(139,92,246,0.06)', border: '1px solid rgba(139,92,246,0.2)', marginTop: '0.5rem' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: scanSummary || isGeneratingSummary || summaryError ? '0.75rem' : '0' }}>
+                        <h4 style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--accent-purple)', textTransform: 'uppercase', letterSpacing: '0.06em', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <Sparkles size={15} /> Clinical Scan Summary
+                        </h4>
+                        
+                        {!scanSummary && !isGeneratingSummary && (
+                           <button
+                             onClick={async () => {
+                               setIsGeneratingSummary(true);
+                               setSummaryError(null);
+                               try {
+                                 // Build the complete scan context to pass to Ollama
+                                 const summaryOutput = await generateScanSummary({
+                                   ...result,
+                                   ...agenticResult,
+                                   requiresAttention: isHighRisk,
+                                   modelLabel: model.label
+                                 }, patient);
+                                 setScanSummary(summaryOutput);
+                               } catch (err) {
+                                 setSummaryError(err.message || 'Error generating summary.');
+                               } finally {
+                                 setIsGeneratingSummary(false);
+                               }
+                             }}
+                             className="btn-primary"
+                             style={{ padding: '6px 14px', fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '6px' }}
+                           >
+                             <Sparkles size={14} /> Generate Summary
+                           </button>
+                        )}
+                      </div>
+
+                      {isGeneratingSummary && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '1rem', color: 'var(--accent-purple)' }}>
+                          <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} />
+                          <span style={{ fontSize: '0.85rem' }}>Ollama gemma3 is drafting a summary…</span>
+                        </div>
+                      )}
+
+                      {summaryError && (
+                        <div style={{ marginTop: '0.75rem', padding: '0.75rem', borderRadius: '8px', background: 'rgba(239,68,68,0.1)', color: 'var(--risk-high)', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <AlertTriangle size={14} /> {summaryError}
+                        </div>
+                      )}
+
+                      {scanSummary && (
+                        <div style={{ marginTop: '0.5rem', animation: 'fadeIn 0.3s ease' }}>
+                           <p style={{ fontSize: '0.9rem', color: 'var(--text-primary)', lineHeight: 1.6 }}>
+                              {scanSummary}
+                           </p>
+                           <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.5rem', textAlign: 'right' }}>
+                             Generated locally by gemma3:4b
+                           </p>
+                        </div>
+                      )}
+                    </div>
 
                     {/* Actions after result */}
                     <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', paddingTop: '0.5rem' }}>
