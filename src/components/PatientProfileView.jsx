@@ -8,6 +8,11 @@ import {
 import { getEnvironmentalData } from '../services/WeatherService';
 import { getDiagnoses } from '../services/PatientDBService';
 import { summarizeTranscription } from '../services/OllamaService';
+import { fetchLocalNews } from '../services/NewsService';
+import { generatePrediction } from '../services/PredictionEngine';
+import { analyzePatientRisk } from '../services/AgenticEHRService';
+import { sendRiskAlertEmail } from '../services/EmailService';
+
 
 const MODEL_META = {
   brain:     { label: 'Brain Tumor MRI',     color: '#8b5cf6', bg: 'rgba(139,92,246,0.1)'  },
@@ -25,6 +30,11 @@ function PatientProfileView({ patient, navigate }) {
   const [diagLoading, setDiagLoading] = useState(true);
   const [dbStatus, setDbStatus] = useState('checking'); // 'checking' | 'ok' | 'fallback'
 
+  // Risk state
+  const [environmentalRisk, setEnvironmentalRisk] = useState(null);
+  const [sendingAlert, setSendingAlert] = useState(false);
+  const [alertStatus, setAlertStatus] = useState(null);
+
   // Transcription state
   const [transcriptionText, setTranscriptionText] = useState('');
   const [transcribing, setTranscribing] = useState(false);
@@ -34,11 +44,37 @@ function PatientProfileView({ patient, navigate }) {
 
   useEffect(() => {
     if (!patient?.city) return;
-    getEnvironmentalData(patient.city)
-      .then(setEnvData)
-      .catch(() => setEnvData(null))
-      .finally(() => setEnvLoading(false));
-  }, [patient?.city]);
+    setEnvLoading(true);
+
+    Promise.all([
+      getEnvironmentalData(patient.city),
+      fetchLocalNews(patient.city).catch(() => ({ articles: [] }))
+    ]).then(([env, news]) => {
+      setEnvData(env);
+      const prediction = generatePrediction(env.weather, news);
+      let riskAnalysis = analyzePatientRisk(patient, prediction);
+      
+      // Overriding Agentic check for AQI-Specific Vulnerabilities (Since PredictionEngine only tracks weather/temp)
+      if (env.aqi && env.aqi.european_aqi > 60 && patient.preExistingConditions?.some(c => ['COPD', 'Asthma'].includes(c))) {
+        riskAnalysis = {
+           hasWarning: true,
+           level: 'Critical Warning',
+           reason: `Severely poor air quality in ${patient.city} (AQI: ${env.aqi.european_aqi}) poses an immediate acute threat to your pre-existing respiratory conditions.`
+        };
+        if (!prediction.primaryRisk) prediction.primaryRisk = {};
+        prediction.primaryRisk.category = 'Respiratory';
+      }
+      
+      // If there's an actual risk payload, we bind the category for the email service
+      if (riskAnalysis) {
+        riskAnalysis.category = prediction?.primaryRisk?.category || 'General';
+      }
+      setEnvironmentalRisk(riskAnalysis);
+    })
+    .catch(() => setEnvData(null))
+    .finally(() => setEnvLoading(false));
+
+  }, [patient?.city, patient]);
 
   useEffect(() => {
     if (!patient?.id) return;
@@ -178,7 +214,64 @@ function PatientProfileView({ patient, navigate }) {
           )}
         </div>
 
+        {/* ── Environmental Risk Banner & Email Alert ────────────────────── */}
+        {environmentalRisk?.hasWarning && (
+          <div className="glass-panel" style={{ padding: '1.5rem', marginBottom: '1.5rem', background: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.3)', animation: 'fadeIn 0.5s ease' }}>
+            <div style={{ display: 'flex', gap: '1.25rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+              <div style={{ width: 48, height: 48, borderRadius: '14px', background: 'rgba(239, 68, 68, 0.15)', border: '1px solid rgba(239, 68, 68, 0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                <AlertTriangle size={24} color="var(--risk-high)" />
+              </div>
+              
+              <div style={{ flex: 1 }}>
+                <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--risk-high)', marginBottom: '0.25rem' }}>
+                  Action Required: Elevated {environmentalRisk.category} Risk
+                </h3>
+                <p style={{ fontSize: '0.9rem', color: 'var(--text-primary)', lineHeight: 1.6 }}>
+                  {environmentalRisk.reason}
+                </p>
+                
+                {alertStatus && (
+                  <div style={{ marginTop: '0.75rem', padding: '0.75rem', borderRadius: '8px', background: alertStatus.type === 'success' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)', border: `1px solid ${alertStatus.type === 'success' ? 'rgba(16,185,129,0.2)' : 'rgba(239,68,68,0.2)'}`, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {alertStatus.type === 'success' ? <CheckCircle size={16} color="var(--risk-low)" /> : <AlertTriangle size={16} color="var(--risk-high)" />}
+                    <span style={{ fontSize: '0.85rem', color: alertStatus.type === 'success' ? 'var(--risk-low)' : 'var(--risk-high)' }}>
+                      {alertStatus.message}
+                    </span>
+                  </div>
+                )}
+              </div>
 
+              <div style={{ alignSelf: 'center', flexShrink: 0 }}>
+                <button
+                  onClick={async () => {
+                    setSendingAlert(true);
+                    setAlertStatus(null);
+                    try {
+                      const res = await sendRiskAlertEmail(patient, {
+                        ...environmentalRisk,
+                        diseases: environmentalRisk.diseases || [environmentalRisk.category],
+                        reasoning: environmentalRisk.reason
+                      });
+                      setAlertStatus({ type: 'success', message: res.simulated ? 'Placeholder simulation successful.' : 'Risk alert securely dispatched to patient.' });
+                    } catch (err) {
+                      setAlertStatus({ type: 'error', message: err.message });
+                    } finally {
+                      setSendingAlert(false);
+                    }
+                  }}
+                  disabled={sendingAlert || (alertStatus?.type === 'success')}
+                  className="btn-primary"
+                  style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'var(--risk-high)', padding: '12px 20px', borderRadius: '10px' }}
+                >
+                  {sendingAlert ? (
+                    <><Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> Dispatching Alert…</>
+                  ) : (
+                    <><Wind size={16} /> Send Risk Alert via Email</>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Diagnosis History */}
         <div className="glass-panel" style={{ padding: 0, overflow: 'hidden', animation: 'fadeIn 0.55s ease' }}>

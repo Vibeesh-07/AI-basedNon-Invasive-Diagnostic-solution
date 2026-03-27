@@ -212,6 +212,18 @@ function PatientListView({ patients, loading, navigate }) {
                   style={{ paddingLeft: '2.25rem', fontSize: '0.875rem', borderRadius: '8px' }}
                 />
               </div>
+              
+              <button 
+                onClick={() => navigate('create')}
+                className="btn-primary" 
+                style={{ height: '38px', padding: '0 1rem', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', whiteSpace: 'nowrap' }}
+              >
+                <Plus size={16} />
+                Add Patient
+              </button>
+
+              <div style={{ width: 1, height: 24, background: 'rgba(255,255,255,0.1)' }} />
+
               <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
                 <Users size={14} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} />
                 {filtered.length} patients

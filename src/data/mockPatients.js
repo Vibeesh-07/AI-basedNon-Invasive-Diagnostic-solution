@@ -101,6 +101,7 @@ export const mockPatients = [
   {
     id: 'PT-1010',
     name: 'Anjali Desai',
+    email: 'anjali.mock@example.com',
     age: 80,
     gender: 'Female',
     city: 'Tiruchirappalli',
@@ -108,7 +109,19 @@ export const mockPatients = [
     vitals: { bp: '110/70', heartRate: 88, temp: '100.2°F', spo2: '91%' },
     lastVisit: '2026-03-26',
     diagnosisHistory: []
+  },
+  {
+    id: 'PT-1011',
+    name: 'Sameer Verma',
+    email: 'thiruselvankalyanam@gmail.com',
+    age: 52,
+    gender: 'Male',
+    city: 'Delhi',
+    preExistingConditions: ['COPD', 'Hypertension'],
+    vitals: { bp: '138/88', heartRate: 82, temp: '98.7°F', spo2: '93%' },
+    lastVisit: '2026-03-22',
+    diagnosisHistory: []
   }
 ];
 
-export const VALID_TN_CITIES = ['Chennai', 'Coimbatore', 'Madurai', 'Salem', 'Tiruchirappalli'];
+export const VALID_TN_CITIES = ['Chennai', 'Coimbatore', 'Madurai', 'Salem', 'Tiruchirappalli', 'Delhi'];

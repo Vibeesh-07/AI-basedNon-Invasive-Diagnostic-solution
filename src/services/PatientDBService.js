@@ -21,6 +21,24 @@ export const getAllPatients = async () => {
   }
 };
 
+/**
+ * Add a new patient record to Firestore.
+ * Falls back to session-only if permissions are denied.
+ */
+export const createPatient = async (patientData) => {
+  try {
+    // We use the provided ID or auto-generate one if not present
+    const id = patientData.id || `PT-${Math.floor(Math.random() * 9000) + 1000}`;
+    const payload = { ...patientData, id, diagnosisHistory: [], createdAt: new Date().toISOString() };
+    const docRef = doc(db, PATIENTS_COLLECTION, id);
+    await setDoc(docRef, payload);
+    return { success: true, patient: payload };
+  } catch (error) {
+    console.warn('Firestore createPatient failed, session-only mode:', error.code);
+    return { success: false, error: error.message };
+  }
+};
+
 export const getPatient = async (patientId) => {
   try {
     const docRef = doc(db, PATIENTS_COLLECTION, patientId);

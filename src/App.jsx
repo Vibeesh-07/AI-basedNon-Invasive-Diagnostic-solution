@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import PatientListView from './components/PatientListView';
 import PatientProfileView from './components/PatientProfileView';
+import PatientCreateView from './components/PatientCreateView';
 import DiagnosticPage from './components/DiagnosticPage';
 import { getAllPatients } from './services/PatientDBService';
 
@@ -29,6 +30,11 @@ function App() {
     setView(nextView);
     if (patientId) setActivePatientId(patientId);
     window.scrollTo(0, 0);
+  };
+
+  // Called by PatientCreateView after registration
+  const onPatientAdded = (newPatient) => {
+    setPatients(prev => [newPatient, ...prev]);
   };
 
   // Called by DiagnosticPage after a successful scan — updates in-session history
@@ -62,6 +68,15 @@ function App() {
         patients={patients}
         navigate={navigate}
         recordDiagnosis={recordDiagnosis}
+      />
+    );
+  }
+
+  if (view === 'create') {
+    return (
+      <PatientCreateView
+        navigate={navigate}
+        onPatientAdded={onPatientAdded}
       />
     );
   }
