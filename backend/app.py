@@ -14,6 +14,10 @@ Models:
      Input: (None, 160, 160, 3)  |  9 HAM10000 classes
      Endpoint: POST /predict/skin2
 
+  4. Alzheimer Detection — Local: Models/Osteoporosis_Model_binary.h5 (CNN)
+     Input: (None, 224, 224, 3) | 4 Classes
+     Endpoint: POST /predict/alzheimer
+
 Shared Endpoints:
   GET /health  — status of all loaded models
 """
@@ -37,11 +41,13 @@ CORS(app)
 BASE_DIR        = os.path.dirname(os.path.abspath(__file__))
 SKIN_MODEL_PATH = os.path.join(BASE_DIR, "..", "Models", "ham10000.pt")
 SKIN2_MODEL_PATH = os.path.join(BASE_DIR, "..", "Models", "cnn_fc_model.h5")
+ALZHEIMER_MODEL_PATH = os.path.join(BASE_DIR, "..", "Models", "Osteoporosis_Model_binary.h5")
 
 # ─── Model registry ───────────────────────────────────────────────────────────
-brain_model = None
-skin_yolo   = None
-skin2_model = None
+brain_model   = None
+skin_yolo     = None
+skin2_model   = None
+alzheimer_model = None
 
 BRAIN_LABELS = ["Glioma Tumor", "Meningioma Tumor", "No Tumor", "Pituitary Tumor"]
 
@@ -60,6 +66,13 @@ SKIN2_LABELS = [
 
 SKIN2_HIGH_RISK = {"Melanoma", "Basal Cell Carcinoma", "Actinic Keratosis", "Squamous Cell Carcinoma"}
 
+# Alzheimer 4-class labels (Standard MRI Dataset)
+ALZHEIMER_LABELS = [
+    "Mild Demented",
+    "Moderate Demented",
+    "Non Demented",
+    "Very Mild Demented"
+]
 
 # ─── Loaders ──────────────────────────────────────────────────────────────────
 
@@ -119,6 +132,18 @@ def load_skin2_model():
     skin2_model = m
     logger.info(f"Skin v2 model loaded. Input: {m.input_shape}, Output: {m.output_shape}")
     return skin2_model
+
+
+def load_alzheimer_model():
+    global alzheimer_model
+    if alzheimer_model is not None:
+        return alzheimer_model
+    import tensorflow as tf
+    abs_path = os.path.abspath(ALZHEIMER_MODEL_PATH)
+    logger.info(f"Loading Alzheimer model from: {abs_path}")
+    alzheimer_model = tf.keras.models.load_model(abs_path, compile=False)
+    logger.info(f"Alzheimer model loaded. Input: {alzheimer_model.input_shape}, Output: {alzheimer_model.output_shape}")
+    return alzheimer_model
 
 
 # ─── Brain helpers ────────────────────────────────────────────────────────────
@@ -247,6 +272,36 @@ def run_skin2_inference(image_bytes: bytes):
     }
 
 
+# ─── Alzheimer helper ─────────────────────────────────────────────────────────
+
+def run_alzheimer_inference(image_bytes: bytes):
+    """Preprocess to 224x224, run CNN, return prediction + Grad-CAM."""
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB").resize((224, 224), Image.LANCZOS)
+    arr = np.array(img, dtype=np.float32) / 255.0
+    input_tensor = np.expand_dims(arr, axis=0)
+
+    m = load_alzheimer_model()
+    preds = m.predict(input_tensor, verbose=0)[0]
+    idx   = int(np.argmax(preds))
+    conf  = float(preds[idx]) * 100
+    label = ALZHEIMER_LABELS[idx] if idx < len(ALZHEIMER_LABELS) else f"Class {idx}"
+    requires_attention = label != "Non Demented"
+
+    heatmap = generate_gradcam(m, input_tensor, idx)
+
+    return {
+        "prediction":        label,
+        "confidence":        round(conf, 2),
+        "class_index":       idx,
+        "all_probabilities": {
+            (ALZHEIMER_LABELS[i] if i < len(ALZHEIMER_LABELS) else f"Class {i}"): round(float(preds[i]) * 100, 2)
+            for i in range(len(preds))
+        },
+        "requires_attention": requires_attention,
+        "heatmap":           heatmap
+    }
+
+
 # ─── Routes ───────────────────────────────────────────────────────────────────
 
 @app.route("/health", methods=["GET"])
@@ -256,6 +311,7 @@ def health():
         "brain_model_loaded":  brain_model is not None,
         "skin_model_loaded":   skin_yolo is not None,
         "skin2_model_loaded":  skin2_model is not None,
+        "alzheimer_model_loaded": alzheimer_model is not None,
     })
 
 
@@ -307,8 +363,20 @@ def predict_skin2():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/predict/alzheimer", methods=["POST"])
+def predict_alzheimer():
+    if "file" not in request.files or request.files["file"].filename == "":
+        return jsonify({"error": "No file provided."}), 400
+    try:
+        return jsonify(run_alzheimer_inference(request.files["file"].read()))
+    except Exception as e:
+        logger.exception("Alzheimer prediction error")
+        return jsonify({"error": str(e)}), 500
+
+
 # Backward-compat alias
 @app.route("/predict", methods=["POST"])
+
 def predict_legacy():
     return predict_brain()
 
@@ -320,6 +388,7 @@ if __name__ == "__main__":
         load_brain_model()
         load_skin_model()
         load_skin2_model()
+        load_alzheimer_model()
     except Exception as e:
         logger.warning(f"Pre-load warning: {e}")
     app.run(host="0.0.0.0", port=5000, debug=False)

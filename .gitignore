@@ -24,3 +24,4 @@ dist-ssr
 *.sw?
 backend/venv/
 Models/ham10000.pt
+Models/Osteoporosis_Model_binary.h5
