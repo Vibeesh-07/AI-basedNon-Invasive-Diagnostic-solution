@@ -1,11 +1,12 @@
-import { Shield, Stethoscope, Settings, LayoutDashboard, Search, Menu, X, Activity } from 'lucide-react';
+import { Shield, Stethoscope, Settings, Menu, X, Activity, Microscope } from 'lucide-react';
 
 function Sidebar({ activeRole, setActiveRole, isOpen, setIsOpen }) {
   const roles = [
     { id: 'public', label: 'Outbreak: Public Radar', icon: Shield, color: 'var(--accent-teal)' },
     { id: 'doctor', label: 'Outbreak: Doctor Portal', icon: Stethoscope, color: 'var(--accent-purple)' },
     { id: 'admin', label: 'Outbreak: Admin Console', icon: Settings, color: 'var(--accent-blue)' },
-    { id: 'braintumor', label: 'Brain Tumor Diagnosis', icon: Activity, color: 'var(--accent-teal)' },
+    { id: 'braintumor', label: 'Brain Tumor Diagnosis', icon: Activity, color: 'var(--accent-purple)' },
+    { id: 'skincancer', label: 'Skin Cancer Diagnosis', icon: Microscope, color: 'var(--accent-teal)' },
   ];
 
   return (
